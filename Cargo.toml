@@ -1,0 +1,6 @@
+[package]
+name = "guided_local_intelligence"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
