@@ -1,7 +1,9 @@
 use anyhow::Result;
 use colored::Colorize;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use crate::agents::{
     executor_agent, planner_agent, reflection_agent, synthesizer_agent, verifier_agent,
@@ -42,6 +44,10 @@ impl GuidanceEngine {
         let mut current_task = task.to_string();
         let mut final_output = String::new();
 
+        // The exact SharedMemory structure defined in tools.rs
+        type SharedMemory = Arc<Mutex<HashMap<String, String>>>;
+        let memory: SharedMemory = Arc::new(Mutex::new(HashMap::new()));
+
         for loop_idx in 0..self.max_loops {
             if loop_idx > 0 {
                 println!(
@@ -65,6 +71,7 @@ impl GuidanceEngine {
                     &self.model,
                     &self.ollama_url,
                     self.max_steps,
+                    memory.clone(),
                 ))
                 .await?;
             println!("{}", plan.trim().dimmed());
@@ -91,6 +98,7 @@ impl GuidanceEngine {
                         &self.model,
                         &self.ollama_url,
                         self.max_steps,
+                        memory.clone(),
                     ))
                     .await?;
 
@@ -117,7 +125,6 @@ impl GuidanceEngine {
                     &results_combined,
                     &self.model,
                     &self.ollama_url,
-                    self.max_steps,
                 ))
                 .await?;
             println!("{}", verified.trim().dimmed());
@@ -130,7 +137,6 @@ impl GuidanceEngine {
                     task,
                     &self.model,
                     &self.ollama_url,
-                    self.max_steps,
                 ))
                 .await?;
             println!("{}", synthesized.trim().dimmed());
@@ -144,7 +150,6 @@ impl GuidanceEngine {
                     task,
                     &self.model,
                     &self.ollama_url,
-                    self.max_steps,
                 ))
                 .await?;
             println!("{}", reflection.trim().dimmed());

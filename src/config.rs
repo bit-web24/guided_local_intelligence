@@ -23,8 +23,8 @@ pub struct Config {
     #[arg(long, short)]
     pub path: Option<String>,
 
-    /// Maximum agent steps per sub-agent run
-    #[arg(long, default_value_t = 10)]
+    /// Maximum agent steps per sub-agent run (for Planner and Executor)
+    #[arg(long, default_value_t = 6)]
     pub max_steps: usize,
 
     /// Directory where GLI saves markdown reports after each run

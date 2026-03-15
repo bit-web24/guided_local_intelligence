@@ -32,3 +32,6 @@ futures = "0.3"
 
 # Date/time for report filenames
 chrono = { version = "0.4", features = ["serde"] }
+
+# Synchronous HTTP client for web search tool
+ureq = { version = "2", features = ["json"] }

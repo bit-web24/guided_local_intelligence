@@ -1,8 +1,45 @@
 use agent_b::AgentBuilder;
-use crate::tools::{detect_language_tool, list_directory_tool, read_file_tool, scan_repo_tool};
+use crate::tools::{detect_language_tool, list_directory_tool, read_file_tool, scan_repo_tool, web_search_tool, read_memory_tool, write_memory_tool, SharedMemory};
 
-/// Shared base: Ollama-backed agent with all filesystem tools registered.
-fn base_agent(task: &str, model: &str, ollama_url: &str, max_steps: usize) -> AgentBuilder {
+// ── Inline tool schema for small Ollama models ───────────────────────────────
+//
+// Ollama (localhost) never receives the native `tools[]` payload from Agent-B
+// because small models return 400 errors on that schema.  Instead we inject an
+// explicit, compact tool reference directly into every system prompt that uses
+// tools, so the model knows exactly what to call and in what format.
+//
+// Format used — most compatible across Qwen, Llama, Mistral small models:
+//
+//   ```json
+//   {"name": "tool_name", "arguments": {"arg": "value"}}
+//   ```
+//
+// Agent-B's planning state already parses this JSON-block pattern.  We also
+// support the `TOOL_CALL:` line pattern via the extended parser added to
+// planning.rs.
+
+const TOOL_SCHEMA_BLOCK: &str = r#"
+AVAILABLE TOOLS — call one per reply when needed:
+
+  scan_repo     (path: string)          — Recursively list all files in a directory tree.
+  list_directory(path: string)          — List immediate children of a directory.
+  read_file     (path: string)          — Read text content of a file (up to 4 KB).
+  detect_language(path: string)         — Detect programming languages used in a project.
+  web_search    (query: string)         — Search the web via DuckDuckGo. Use when uncertain.
+  write_memory  (key: str, value: str)  — Save an important finding to use in later steps.
+  read_memory   (key: str)              — Retrieve a previously saved finding from memory.
+
+HOW TO CALL A TOOL — output ONLY this JSON block, nothing else:
+```json
+{"name": "TOOL_NAME", "arguments": {"arg": "value"}}
+```
+Wait for the tool result before writing anything else.
+If you do NOT need a tool right now, answer directly in plain text."#;
+
+// ── Agent base constructors ───────────────────────────────────────────────────
+
+/// Tool-using base: for agents that need to read files (Planner, Executor).
+fn tool_agent(task: &str, model: &str, ollama_url: &str, max_steps: usize, mem: SharedMemory) -> AgentBuilder {
     AgentBuilder::new(task)
         .ollama(ollama_url)
         .model(model)
@@ -11,42 +48,53 @@ fn base_agent(task: &str, model: &str, ollama_url: &str, max_steps: usize) -> Ag
         .add_tool(list_directory_tool())
         .add_tool(scan_repo_tool())
         .add_tool(detect_language_tool())
+        .add_tool(web_search_tool())
+        .add_tool(read_memory_tool(mem.clone()))
+        .add_tool(write_memory_tool(mem))
+}
+
+/// Text-only base: for agents that only reason over provided text (Verifier, Synthesizer, Reflector).
+/// NO tools — prevents small models from looping on tool calls they don't need.
+fn text_agent(task: &str, model: &str, ollama_url: &str) -> AgentBuilder {
+    AgentBuilder::new(task)
+        .ollama(ollama_url)
+        .model(model)
+        .max_steps(4) // Hard cap: these agents should finish in 1-2 LLM calls
 }
 
 // ── Agent factories ──────────────────────────────────────────────────────────
 
-/// PlannerAgent — produces a numbered list of 3-5 concrete steps.
-/// When a path is provided it MUST scan it first, then plan based on findings.
+/// PlannerAgent — scans the path (if given), then outputs a numbered 3-5 step plan.
 pub fn planner_agent(
     task: &str,
     path_context: Option<&str>,
     model: &str,
     ollama_url: &str,
     max_steps: usize,
+    mem: SharedMemory,
 ) -> AgentBuilder {
-    // When a path is given, prepend a mandatory scan instruction so the
-    // small model reads the filesystem BEFORE deciding what the plan is.
     let full_task = match path_context {
         Some(p) => format!(
             "First call scan_repo with path=\"{p}\" to see the project. \
              Then make a numbered plan (3-5 steps) to accomplish:\n{task}"
         ),
-        None => format!(
-            "Make a numbered plan (3-5 short steps) to accomplish:\n{task}"
-        ),
+        None => format!("Make a numbered plan (3-5 short steps) to accomplish:\n{task}"),
     };
 
-    let system_prompt =
+    // Compact system prompt + explicit tool schema so small models know the format.
+    let system_prompt = format!(
         "You are a planner. Output ONLY a numbered list of 3-5 short steps.\
          \nUse tools to read the project first if a path is given.\
-         \nNo prose, no explanations. Just the numbered list.";
+         \nNo prose, no explanations. Just the numbered list.\
+         {TOOL_SCHEMA_BLOCK}"
+    );
 
-    base_agent(&full_task, model, ollama_url, max_steps)
-        .system_prompt(system_prompt)
+    tool_agent(&full_task, model, ollama_url, max_steps, mem)
+        .system_prompt(&system_prompt)
         .task_type("planning")
 }
 
-/// ExecutorAgent — executes exactly one step from the plan.
+/// ExecutorAgent — executes exactly one step. May use filesystem tools.
 pub fn executor_agent(
     step: &str,
     step_num: usize,
@@ -55,94 +103,97 @@ pub fn executor_agent(
     model: &str,
     ollama_url: &str,
     max_steps: usize,
+    mem: SharedMemory,
 ) -> AgentBuilder {
     let ctx_section = if context.is_empty() {
         String::new()
     } else {
-        format!("\nContext from previous steps:\n{context}\n")
+        // Truncate context to keep the prompt short for small models
+        let trimmed: String = context.chars().take(800).collect();
+        format!("\nPrevious results:\n{trimmed}\n")
     };
 
     let full_task = format!(
         "Execute step {step_num}/{total_steps}: {step}{ctx_section}\
-         Use a tool if you need to read files or list directories. \
-         Report only what you found."
+         Use a tool if you need to read or list files. Report what you found."
     );
 
-    let system_prompt =
+    // Compact system prompt + explicit tool schema.
+    let system_prompt = format!(
         "You are an executor. Do exactly what the step says.\
          \nUse read_file or list_directory if you need to look at files.\
-         \nReport your findings in 2-4 sentences. Be factual.";
+         \nReport in 2-4 sentences. Be factual and concise.\
+         {TOOL_SCHEMA_BLOCK}"
+    );
 
-    base_agent(&full_task, model, ollama_url, max_steps)
-        .system_prompt(system_prompt)
+    tool_agent(&full_task, model, ollama_url, max_steps, mem)
+        .system_prompt(&system_prompt)
         .task_type("execution")
 }
 
-/// VerifierAgent — checks results for obvious errors or gaps.
+/// VerifierAgent — text-only; checks provided results for errors.
 pub fn verifier_agent(
     results: &str,
     model: &str,
     ollama_url: &str,
-    max_steps: usize,
 ) -> AgentBuilder {
+    // Truncate to keep prompt manageable for small models
+    let trimmed: String = results.chars().take(2000).collect();
     let full_task = format!(
-        "Review these results. Fix errors, remove hallucinations, mark uncertain claims with [?].\
-         \nReturn the corrected results only:\n\n{results}"
+        "Review these results. Fix errors and hallucinations. \
+         Mark uncertain claims with [?]. Return the corrected version:\n\n{trimmed}"
     );
 
-    let system_prompt =
-        "You are a verifier. Fix errors and hallucinations in the results.\
-         \nMark uncertain items with [?]. Return only the corrected version.";
-
-    base_agent(&full_task, model, ollama_url, max_steps)
-        .system_prompt(system_prompt)
+    text_agent(&full_task, model, ollama_url)
+        .system_prompt(
+            "You are a verifier. Fix errors in the results. \
+             Mark uncertain items [?]. Return only the corrected text.",
+        )
         .task_type("verification")
 }
 
-/// SynthesizerAgent — merges verified results into a clean final report.
+/// SynthesizerAgent — text-only; writes the final structured report.
 pub fn synthesizer_agent(
     verified_results: &str,
     original_task: &str,
     model: &str,
     ollama_url: &str,
-    max_steps: usize,
 ) -> AgentBuilder {
+    let trimmed: String = verified_results.chars().take(2000).collect();
     let full_task = format!(
-        "Write a clear answer for: \"{original_task}\"\
-         \nBased on these findings:\n{verified_results}"
+        "Write a clear markdown answer for: \"{original_task}\"\
+         \nBased on these findings:\n{trimmed}"
     );
 
-    let system_prompt =
-        "You are a report writer. Create a clear, structured markdown report.\
-         \nUse ## headings and bullet points. Answer the task completely.";
-
-    base_agent(&full_task, model, ollama_url, max_steps)
-        .system_prompt(system_prompt)
+    text_agent(&full_task, model, ollama_url)
+        .system_prompt(
+            "You are a report writer. Write a clear markdown answer with ## headings and bullets.\
+             \nBe complete. Answer the task directly.",
+        )
         .task_type("synthesis")
 }
 
-/// ReflectionAgent — rates the output and returns DONE or REFINE:<reason>.
+/// ReflectionAgent — text-only; MUST end with DONE or REFINE:<reason>.
 pub fn reflection_agent(
     output: &str,
     original_task: &str,
     model: &str,
     ollama_url: &str,
-    max_steps: usize,
 ) -> AgentBuilder {
+    let trimmed: String = output.chars().take(1500).collect();
     let full_task = format!(
         "Task: \"{original_task}\"\
-         \nOutput:\n{output}\
+         \nOutput:\n{trimmed}\
          \nDoes this output fully answer the task?\
          \nEnd your reply with exactly one of:\
          \nDONE\
          \nREFINE: <one sentence saying what is missing>"
     );
 
-    let system_prompt =
-        "You are a quality checker. Answer: does the output fully address the task?\
-         \nYour reply MUST end with DONE or REFINE:<reason>. Nothing after that line.";
-
-    base_agent(&full_task, model, ollama_url, max_steps)
-        .system_prompt(system_prompt)
+    text_agent(&full_task, model, ollama_url)
+        .system_prompt(
+            "You are a quality checker. Does the output fully address the task?\
+             \nYour reply MUST end with DONE or REFINE:<reason>.",
+        )
         .task_type("reflection")
 }
