@@ -84,6 +84,7 @@ pub fn planner_agent(
     // Compact system prompt + explicit tool schema so small models know the format.
     let system_prompt = format!(
         "You are a planner. Output ONLY a numbered list of 3-5 short steps.\
+         \nCRITICAL: DO NOT GUESS OR ASSUME. If you need information about the project, you MUST plan to use tools to read it.\
          \nUse tools to read the project first if a path is given.\
          \nNo prose, no explanations. Just the numbered list.\
          {TOOL_SCHEMA_BLOCK}"
@@ -100,6 +101,7 @@ pub fn executor_agent(
     step_num: usize,
     total_steps: usize,
     context: &str,
+    path_context: Option<&str>,
     model: &str,
     ollama_url: &str,
     max_steps: usize,
@@ -113,16 +115,21 @@ pub fn executor_agent(
         format!("\nPrevious results:\n{trimmed}\n")
     };
 
+    let target_section = match path_context {
+        Some(p) => format!("\nIMPORTANT: Your target project path is \"{}\". Use this exact path in your tool calls when examining the project.\n", p),
+        None => String::new(),
+    };
+
     let full_task = format!(
-        "Execute step {step_num}/{total_steps}: {step}{ctx_section}\
+        "Execute step {step_num}/{total_steps}: {step}{target_section}{ctx_section}\
          Use a tool if you need to read or list files. Report what you found."
     );
 
     // Compact system prompt + explicit tool schema.
     let system_prompt = format!(
         "You are an executor. Do exactly what the step says.\
-         \nUse read_file or list_directory if you need to look at files.\
-         \nReport in 2-4 sentences. Be factual and concise.\
+         \nCRITICAL: DO NOT GUESS OR MAKE ASSUMPTIONS. If you are asked about the code, you MUST use read_file or list_directory to look at it first.\
+         \nReport in 2-4 sentences. Be factual and concise based ONLY on tool output.\
          {TOOL_SCHEMA_BLOCK}"
     );
 

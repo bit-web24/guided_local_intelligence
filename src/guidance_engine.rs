@@ -41,6 +41,7 @@ impl GuidanceEngine {
     /// Run the Progressive Guidance Loop for the given task.
     /// Returns the final synthesized answer and saves a report to `reports_dir`.
     pub async fn run(&self, task: &str) -> Result<String> {
+        let start_time = std::time::Instant::now();
         let mut current_task = task.to_string();
         let mut final_output = String::new();
 
@@ -95,6 +96,7 @@ impl GuidanceEngine {
                         idx,
                         steps.len(),
                         &accumulated_context,
+                        self.path_context.as_deref(),
                         &self.model,
                         &self.ollama_url,
                         self.max_steps,
@@ -172,6 +174,14 @@ impl GuidanceEngine {
         if let Err(e) = self.save_report(task, &final_output) {
             eprintln!("{}", format!("  ⚠  Could not save report: {}", e).yellow());
         }
+
+        let elapsed = start_time.elapsed();
+        println!(
+            "\n{}",
+            format!("  ⏱  Total Execution Time: {:.1} seconds", elapsed.as_secs_f64())
+                .cyan()
+                .bold()
+        );
 
         Ok(final_output)
     }
