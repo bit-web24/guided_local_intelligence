@@ -17,16 +17,24 @@ pub fn write_memory_tool(mem: SharedMemory) -> Tool {
         "Save an important fact, code snippet, or finding across steps. \
          Use this so you don't have to reread the same files later.",
     )
-    .param("key", "string", "A short, descriptive name (e.g., 'auth_logic' or 'db_schema')")
+    .param(
+        "key",
+        "string",
+        "A short, descriptive name (e.g., 'auth_logic' or 'db_schema')",
+    )
     .param("value", "string", "The information to save")
     .call(move |args| {
-        let key = args.get("key").and_then(|v| v.as_str())
+        let key = args
+            .get("key")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| "Missing required parameter: key".to_string())?
             .to_string();
-        let val = args.get("value").and_then(|v| v.as_str())
+        let val = args
+            .get("value")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| "Missing required parameter: value".to_string())?
             .to_string();
-            
+
         mem.lock().unwrap().insert(key.clone(), val);
         Ok(format!("Saved to memory under key '{}'", key))
     })
@@ -41,9 +49,11 @@ pub fn read_memory_tool(mem: SharedMemory) -> Tool {
     )
     .param("key", "string", "The name of the memory to read")
     .call(move |args| {
-        let key = args.get("key").and_then(|v| v.as_str())
+        let key = args
+            .get("key")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| "Missing required parameter: key".to_string())?;
-            
+
         let mem_guard = mem.lock().unwrap();
         if let Some(val) = mem_guard.get(key) {
             Ok(val.clone())
@@ -53,7 +63,6 @@ pub fn read_memory_tool(mem: SharedMemory) -> Tool {
         }
     })
 }
-
 
 // ── Maximum bytes to read from a file before truncating ──────────────────────
 const MAX_FILE_BYTES: usize = 4096;
@@ -74,7 +83,11 @@ pub fn web_search_tool() -> Tool {
          need a definition, or lack information in local files. \
          Returns an instant-answer summary.",
     )
-    .param("query", "string", "The search query — be specific and concise")
+    .param(
+        "query",
+        "string",
+        "The search query — be specific and concise",
+    )
     .param_opt(
         "max_results",
         "integer",
@@ -147,10 +160,7 @@ pub fn web_search_tool() -> Tool {
         }
 
         // Answer (for simple factual queries like "how many days in a year")
-        let answer = body
-            .get("Answer")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let answer = body.get("Answer").and_then(|v| v.as_str()).unwrap_or("");
         if !answer.is_empty() {
             output.push_str(&format!("## Answer\n{}\n\n", answer));
         }
@@ -196,15 +206,15 @@ fn urlencoding_simple(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 2);
     for byte in s.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
-            | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
             b' ' => out.push('+'),
             other => out.push_str(&format!("%{:02X}", other)),
         }
     }
     out
 }
-
 
 /// Tool: read_file
 /// Reads the contents of a file and returns its text (truncated to 4 KB).
@@ -213,15 +223,19 @@ pub fn read_file_tool() -> Tool {
         "read_file",
         "Read the text contents of a file on disk. Returns up to 4 KB of content.",
     )
-    .param("path", "string", "Absolute or relative path to the file to read")
+    .param(
+        "path",
+        "string",
+        "Absolute or relative path to the file to read",
+    )
     .call(|args| {
         let path = args
             .get("path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Missing required parameter: path".to_string())?;
 
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read '{}': {}", path, e))?;
+        let content =
+            fs::read_to_string(path).map_err(|e| format!("Failed to read '{}': {}", path, e))?;
 
         if content.len() > MAX_FILE_BYTES {
             Ok(format!(
@@ -355,13 +369,22 @@ pub fn detect_language_tool() -> Tool {
 
 // ── Private helpers ──────────────────────────────────────────────────────────
 
-const SKIP_DIRS: &[&str] = &[".git", "target", "node_modules", ".next", "__pycache__", ".venv"];
+const SKIP_DIRS: &[&str] = &[
+    ".git",
+    "target",
+    "node_modules",
+    ".next",
+    "__pycache__",
+    ".venv",
+];
 
 fn walk_tree(path: &Path, depth: usize, max_depth: usize, lines: &mut Vec<String>) {
     if depth > max_depth {
         return;
     }
-    let Ok(entries) = fs::read_dir(path) else { return };
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
 
     let indent = "  ".repeat(depth);
     let mut children: Vec<_> = entries.flatten().collect();
@@ -390,12 +413,18 @@ fn count_extensions(
     if depth > max_depth {
         return;
     }
-    let Ok(entries) = fs::read_dir(path) else { return };
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
 
     for entry in entries.flatten() {
         let p = entry.path();
         if p.is_dir() {
-            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let name = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             if !SKIP_DIRS.contains(&name.as_str()) {
                 count_extensions(&p, counts, depth + 1, max_depth);
             }

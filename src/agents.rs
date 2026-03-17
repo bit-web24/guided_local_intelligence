@@ -1,5 +1,8 @@
+use crate::tools::{
+    detect_language_tool, list_directory_tool, read_file_tool, read_memory_tool, scan_repo_tool,
+    web_search_tool, write_memory_tool, SharedMemory,
+};
 use agent_b::AgentBuilder;
-use crate::tools::{detect_language_tool, list_directory_tool, read_file_tool, scan_repo_tool, web_search_tool, read_memory_tool, write_memory_tool, SharedMemory};
 
 // ── Inline tool schema for small Ollama models ───────────────────────────────
 //
@@ -39,7 +42,13 @@ If you do NOT need a tool right now, answer directly in plain text."#;
 // ── Agent base constructors ───────────────────────────────────────────────────
 
 /// Tool-using base: for agents that need to read files (Planner, Executor).
-fn tool_agent(task: &str, model: &str, ollama_url: &str, max_steps: usize, mem: SharedMemory) -> AgentBuilder {
+fn tool_agent(
+    task: &str,
+    model: &str,
+    ollama_url: &str,
+    max_steps: usize,
+    mem: SharedMemory,
+) -> AgentBuilder {
     AgentBuilder::new(task)
         .ollama(ollama_url)
         .model(model)
@@ -76,9 +85,9 @@ pub fn planner_agent(
     let full_task = match path_context {
         Some(p) => format!(
             "First call scan_repo with path=\"{p}\" to see the project. \
-             Then make a numbered plan (3-5 steps) to accomplish:\n{task}"
+             Then make a numbered plan (1,2,3,4,... steps) to accomplish:\n{task}"
         ),
-        None => format!("Make a numbered plan (3-5 short steps) to accomplish:\n{task}"),
+        None => format!("Make a numbered plan (1,2,3,4,... steps) to accomplish:\n{task}"),
     };
 
     // Compact system prompt + explicit tool schema so small models know the format.
@@ -139,11 +148,7 @@ pub fn executor_agent(
 }
 
 /// VerifierAgent — text-only; checks provided results for errors.
-pub fn verifier_agent(
-    results: &str,
-    model: &str,
-    ollama_url: &str,
-) -> AgentBuilder {
+pub fn verifier_agent(results: &str, model: &str, ollama_url: &str) -> AgentBuilder {
     // Truncate to keep prompt manageable for small models
     let trimmed: String = results.chars().take(2000).collect();
     let full_task = format!(

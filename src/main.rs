@@ -15,8 +15,8 @@ async fn main() -> anyhow::Result<()> {
     // ── Welcome banner ───────────────────────────────────────────────────────
     println!();
     println!("{}", "╔══════════════════════════════════════════════════════╗".bright_blue());
-    println!("{}", "║       Guided Local Intelligence (GLI)  v0.1          ║".bright_blue().bold());
-    println!("{}", "║       Progressive Guidance Loop — PLAN→EXEC→REFLECT  ║".bright_blue());
+    println!("{}", "║       Guided Local Intelligence (GLI)  v1.0          ║".bright_blue().bold());
+    println!("{}", "║       Progressive Guidance Loop — PLAN -> EXEC -> SYNTHESIZE -> REFLECT  ║".bright_blue());
     println!("{}", "╚══════════════════════════════════════════════════════╝".bright_blue());
     println!();
     println!("  {} {}", "Task:".bold(), cfg.task.yellow());
@@ -59,10 +59,6 @@ async fn main() -> anyhow::Result<()> {
             eprintln!();
             eprintln!("  {}: {}", "GLI failed".bright_red().bold(), e);
             eprintln!();
-            eprintln!("{}", "Hints:".bold());
-            eprintln!("  • Is Ollama running?  →  ollama serve");
-            eprintln!("  • Is the model pulled?  →  ollama pull {}", cfg.model);
-            eprintln!("  • Check URL:  {}", cfg.ollama_url);
             std::process::exit(1);
         }
     }

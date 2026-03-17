@@ -111,12 +111,7 @@ impl GuidanceEngine {
                     step,
                     result.trim()
                 ));
-                execution_results.push(format!(
-                    "### Step {}: {}\n{}",
-                    idx,
-                    step,
-                    result.trim()
-                ));
+                execution_results.push(format!("### Step {}: {}\n{}", idx, step, result.trim()));
             }
 
             // ── Stage 3: VERIFY ──────────────────────────────────────────────
@@ -178,9 +173,12 @@ impl GuidanceEngine {
         let elapsed = start_time.elapsed();
         println!(
             "\n{}",
-            format!("  ⏱  Total Execution Time: {:.1} seconds", elapsed.as_secs_f64())
-                .cyan()
-                .bold()
+            format!(
+                "  ⏱  Total Execution Time: {:.1} seconds",
+                elapsed.as_secs_f64()
+            )
+            .cyan()
+            .bold()
         );
 
         Ok(final_output)
@@ -197,7 +195,13 @@ impl GuidanceEngine {
         let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
         let slug: String = task
             .chars()
-            .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
             .take(40)
             .collect::<String>()
             .trim_matches('_')
