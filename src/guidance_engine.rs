@@ -2,11 +2,13 @@ use anyhow::Result;
 use colored::Colorize;
 use std::collections::HashMap;
 use std::fs;
+use std::io::{self, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::agents::{
-    executor_agent, planner_agent, reflection_agent, synthesizer_agent, verifier_agent,
+    clarifier_agent, executor_agent, planner_agent, reflection_agent, synthesizer_agent,
+    verifier_agent,
 };
 
 pub struct GuidanceEngine {
@@ -48,6 +50,54 @@ impl GuidanceEngine {
         // The exact SharedMemory structure defined in tools.rs
         type SharedMemory = Arc<Mutex<HashMap<String, String>>>;
         let memory: SharedMemory = Arc::new(Mutex::new(HashMap::new()));
+
+        // ── Stage 0: CLARIFY (one-time, before any loops) ──────────────────
+        self.print_stage("CLARIFY", None);
+        let clarification = self
+            .run_agent(clarifier_agent(
+                &current_task,
+                self.path_context.as_deref(),
+                &self.model,
+                &self.ollama_url,
+            ))
+            .await?;
+        println!("{}", clarification.trim().dimmed());
+
+        // Ask user for confirmation
+        println!();
+        println!("{}", "Does this match what you want to do?".bold().yellow());
+        println!(
+            "{}",
+            "(type 'yes' or 'y' to continue, anything else to refine)".dimmed()
+        );
+        print!("{} ", "→".yellow().bold());
+        io::stdout().flush()?;
+
+        let mut user_input = String::new();
+        io::stdin().read_line(&mut user_input)?;
+        let user_input = user_input.trim().to_lowercase();
+
+        if !user_input.starts_with('y') && user_input != "yes" {
+            println!(
+                "\n{}",
+                "Enter your refined task description:".bold().yellow()
+            );
+            print!("{} ", "→".yellow().bold());
+            io::stdout().flush()?;
+            let mut refined = String::new();
+            io::stdin().read_line(&mut refined)?;
+            if !refined.trim().is_empty() {
+                current_task = refined.trim().to_string();
+                println!("\n{}", "Task updated. Re-clarifying...".yellow().italic());
+                // Recursively clarify again (could be a loop, but for simplicity, just update)
+                current_task = format!(
+                    "{}\n\nPrevious understanding:\n{}",
+                    current_task, clarification
+                );
+            }
+        }
+
+        println!("\n{}", "Proceeding with task...".green().bold());
 
         for loop_idx in 0..self.max_loops {
             if loop_idx > 0 {

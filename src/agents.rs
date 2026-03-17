@@ -185,6 +185,40 @@ pub fn synthesizer_agent(
         .task_type("synthesis")
 }
 
+/// ClarifierAgent — text-only; rephrases and expands the user prompt for clarity.
+pub fn clarifier_agent(
+    task: &str,
+    path_context: Option<&str>,
+    model: &str,
+    ollama_url: &str,
+) -> AgentBuilder {
+    let context_note = match path_context {
+        Some(p) => format!("\nProject context path: {}", p),
+        None => String::new(),
+    };
+
+    let full_task = format!(
+        "User's request:\n\"{task}\"{context_note}\n\n\
+         Your task:\
+         \n1. Rephrase and expand this request to make it crystal clear\
+         \n2. Ask clarifying questions if anything is ambiguous\
+         \n3. Output the expanded understanding in a clear format\n\n\
+         Example format:\n\
+         **Understanding:** [Rephrase the core request]\n\
+         **Goals:** [List specific goals]\n\
+         **Scope:** [Define what is/isn't included]\n\
+         **Questions:** [Any clarifications needed?]"
+    );
+
+    text_agent(&full_task, model, ollama_url)
+        .system_prompt(
+            "You are a task clarifier. Your job is to ensure the user's request is fully understood.\
+             \nRephrase the task clearly, break it down into goals, define scope, and ask clarifying questions if needed.\
+             \nBe concise but thorough.",
+        )
+        .task_type("clarification")
+}
+
 /// ReflectionAgent — text-only; MUST end with DONE or REFINE:<reason>.
 pub fn reflection_agent(
     output: &str,
