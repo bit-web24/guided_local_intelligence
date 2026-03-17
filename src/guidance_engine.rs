@@ -10,6 +10,7 @@ use crate::agents::{
     clarifier_agent, executor_agent, planner_agent, reflection_agent, synthesizer_agent,
     verifier_agent,
 };
+use crate::context_summarizer::ContextSummarizer;
 
 pub struct GuidanceEngine {
     pub model: String,
@@ -54,7 +55,8 @@ impl GuidanceEngine {
         // ── Stage 0: CLARIFY (one-time, before any loops) ──────────────────
         self.print_stage("CLARIFY", None);
         let mut clarification_loop_count = 0;
-        let max_clarification_loops = 2;
+        let max_clarification_loops = 3;
+        let mut clarification_notes: Vec<String> = Vec::new();
 
         loop {
             let clarification = self
@@ -66,54 +68,79 @@ impl GuidanceEngine {
                 ))
                 .await?;
             println!("{}", clarification.trim().dimmed());
+            println!();
+            println!("{}", "Compact task brief:".yellow().bold());
+            println!(
+                "{}",
+                ContextSummarizer::summarize_clarification(&clarification)
+                    .trim()
+                    .dimmed()
+            );
+
+            let quick_plan = self
+                .run_agent(planner_agent(
+                    &current_task,
+                    self.path_context.as_deref(),
+                    &self.model,
+                    &self.ollama_url,
+                    self.max_steps,
+                    memory.clone(),
+                ))
+                .await?;
+            let quick_plan_summary = ContextSummarizer::summarize_plan(&quick_plan);
+
+            println!();
+            println!("{}", "Compact plan preview:".yellow().bold());
+            println!("{}", quick_plan_summary.trim().dimmed());
 
             // Ask user for confirmation
             println!();
             println!("{}", "Does this match what you want to do?".bold().yellow());
             println!(
                 "{}",
-                "(type 'yes' or 'y' to continue, anything else to refine)".dimmed()
+                "(type 'yes' or 'y' to continue, anything else to clarify and replan)".dimmed()
             );
             print!("{} ", "→".yellow().bold());
             io::stdout().flush()?;
 
             let mut user_input = String::new();
             io::stdin().read_line(&mut user_input)?;
-            let user_input = user_input.trim().to_lowercase();
+            let user_input = user_input.trim();
 
-            if user_input.starts_with('y') || user_input == "yes" {
+            if user_input.eq_ignore_ascii_case("y") || user_input.eq_ignore_ascii_case("yes") {
                 // User confirmed, proceed to planning
                 break;
-            } else {
-                // User wants to refine
+            } else if !user_input.is_empty() {
                 clarification_loop_count += 1;
+                clarification_notes.push(user_input.to_string());
+                current_task = format!(
+                    "{}\n\nUser clarifications:\n{}",
+                    task,
+                    clarification_notes
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, note)| format!("{}. {}", idx + 1, note))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+
+                println!(
+                    "\n{}",
+                    "Replanning with your clarification...".yellow().italic()
+                );
+
                 if clarification_loop_count >= max_clarification_loops {
                     println!(
-                        "\n{}",
-                        "Max clarification rounds reached. Proceeding with current task..."
+                        "{}",
+                        "Clarification limit reached. Proceeding with the latest replanned task."
                             .yellow()
                     );
                     break;
                 }
-
-                println!(
-                    "\n{}",
-                    "Enter your refined task description:".bold().yellow()
-                );
-                print!("{} ", "→".yellow().bold());
-                io::stdout().flush()?;
-                let mut refined = String::new();
-                io::stdin().read_line(&mut refined)?;
-
-                if !refined.trim().is_empty() {
-                    current_task = refined.trim().to_string();
-                    println!("\n{}", "Re-clarifying with your input...".yellow().italic());
-                    // Loop will run clarification again with the refined task
-                } else {
-                    // Empty input, just proceed
-                    println!("\n{}", "No input provided. Proceeding...".yellow());
-                    break;
-                }
+            } else {
+                // Empty input, just proceed
+                println!("\n{}", "Proceeding...".yellow());
+                break;
             }
         }
 
@@ -150,10 +177,13 @@ impl GuidanceEngine {
             // Parse plan into steps
             let steps = parse_steps(&plan);
 
+            // Summarize plan for context efficiency
+            let plan_summary = ContextSummarizer::summarize_plan(&plan);
+
             // ── Stage 2: EXECUTE ─────────────────────────────────────────────
             self.print_stage("EXECUTE", None);
-            let mut execution_results: Vec<String> = Vec::new();
-            let mut accumulated_context = String::new();
+            let mut accumulated_context = plan_summary.clone();
+            let mut step_summaries: Vec<String> = Vec::new();
 
             for (i, step) in steps.iter().enumerate() {
                 let idx = i + 1;
@@ -175,32 +205,35 @@ impl GuidanceEngine {
                     .await?;
 
                 println!("{}", result.trim().dimmed());
-                accumulated_context.push_str(&format!(
-                    "Step {}: {}\nResult: {}\n\n",
-                    idx,
-                    step,
-                    result.trim()
-                ));
-                execution_results.push(format!("### Step {}: {}\n{}", idx, step, result.trim()));
+
+                // Summarize step result for context efficiency
+                let step_summary = ContextSummarizer::summarize_step_result(&result, idx);
+                step_summaries.push(step_summary.clone());
+
+                // Keep only the compact summary in downstream context.
+                accumulated_context.push_str(&format!("{}\n", step_summary));
             }
 
             // ── Stage 3: VERIFY ──────────────────────────────────────────────
             self.print_stage("VERIFY", None);
-            let results_combined = execution_results.join("\n\n");
+            let verification_input =
+                ContextSummarizer::summarize_for_verification(&plan_summary, &step_summaries);
             let verified = self
                 .run_agent(verifier_agent(
-                    &results_combined,
+                    &verification_input,
                     &self.model,
                     &self.ollama_url,
                 ))
                 .await?;
             println!("{}", verified.trim().dimmed());
 
+            let verification_summary = ContextSummarizer::summarize_verification(&verified);
+
             // ── Stage 4: SYNTHESIZE ──────────────────────────────────────────
             self.print_stage("SYNTHESIZE", None);
             let synthesized = self
                 .run_agent(synthesizer_agent(
-                    &verified,
+                    &verification_summary,
                     task,
                     &self.model,
                     &self.ollama_url,
@@ -209,11 +242,13 @@ impl GuidanceEngine {
             println!("{}", synthesized.trim().dimmed());
             final_output = synthesized.clone();
 
+            let synthesis_summary = ContextSummarizer::summarize_synthesis(&synthesized);
+
             // ── Stage 5: REFLECT ─────────────────────────────────────────────
             self.print_stage("REFLECT", None);
             let reflection = self
                 .run_agent(reflection_agent(
-                    &synthesized,
+                    &synthesis_summary,
                     task,
                     &self.model,
                     &self.ollama_url,
