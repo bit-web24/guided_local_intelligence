@@ -53,47 +53,67 @@ impl GuidanceEngine {
 
         // ── Stage 0: CLARIFY (one-time, before any loops) ──────────────────
         self.print_stage("CLARIFY", None);
-        let clarification = self
-            .run_agent(clarifier_agent(
-                &current_task,
-                self.path_context.as_deref(),
-                &self.model,
-                &self.ollama_url,
-            ))
-            .await?;
-        println!("{}", clarification.trim().dimmed());
+        let mut clarification_loop_count = 0;
+        let max_clarification_loops = 2;
 
-        // Ask user for confirmation
-        println!();
-        println!("{}", "Does this match what you want to do?".bold().yellow());
-        println!(
-            "{}",
-            "(type 'yes' or 'y' to continue, anything else to refine)".dimmed()
-        );
-        print!("{} ", "→".yellow().bold());
-        io::stdout().flush()?;
+        loop {
+            let clarification = self
+                .run_agent(clarifier_agent(
+                    &current_task,
+                    self.path_context.as_deref(),
+                    &self.model,
+                    &self.ollama_url,
+                ))
+                .await?;
+            println!("{}", clarification.trim().dimmed());
 
-        let mut user_input = String::new();
-        io::stdin().read_line(&mut user_input)?;
-        let user_input = user_input.trim().to_lowercase();
-
-        if !user_input.starts_with('y') && user_input != "yes" {
+            // Ask user for confirmation
+            println!();
+            println!("{}", "Does this match what you want to do?".bold().yellow());
             println!(
-                "\n{}",
-                "Enter your refined task description:".bold().yellow()
+                "{}",
+                "(type 'yes' or 'y' to continue, anything else to refine)".dimmed()
             );
             print!("{} ", "→".yellow().bold());
             io::stdout().flush()?;
-            let mut refined = String::new();
-            io::stdin().read_line(&mut refined)?;
-            if !refined.trim().is_empty() {
-                current_task = refined.trim().to_string();
-                println!("\n{}", "Task updated. Re-clarifying...".yellow().italic());
-                // Recursively clarify again (could be a loop, but for simplicity, just update)
-                current_task = format!(
-                    "{}\n\nPrevious understanding:\n{}",
-                    current_task, clarification
+
+            let mut user_input = String::new();
+            io::stdin().read_line(&mut user_input)?;
+            let user_input = user_input.trim().to_lowercase();
+
+            if user_input.starts_with('y') || user_input == "yes" {
+                // User confirmed, proceed to planning
+                break;
+            } else {
+                // User wants to refine
+                clarification_loop_count += 1;
+                if clarification_loop_count >= max_clarification_loops {
+                    println!(
+                        "\n{}",
+                        "Max clarification rounds reached. Proceeding with current task..."
+                            .yellow()
+                    );
+                    break;
+                }
+
+                println!(
+                    "\n{}",
+                    "Enter your refined task description:".bold().yellow()
                 );
+                print!("{} ", "→".yellow().bold());
+                io::stdout().flush()?;
+                let mut refined = String::new();
+                io::stdin().read_line(&mut refined)?;
+
+                if !refined.trim().is_empty() {
+                    current_task = refined.trim().to_string();
+                    println!("\n{}", "Re-clarifying with your input...".yellow().italic());
+                    // Loop will run clarification again with the refined task
+                } else {
+                    // Empty input, just proceed
+                    println!("\n{}", "No input provided. Proceeding...".yellow());
+                    break;
+                }
             }
         }
 

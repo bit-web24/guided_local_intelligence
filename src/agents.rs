@@ -193,28 +193,22 @@ pub fn clarifier_agent(
     ollama_url: &str,
 ) -> AgentBuilder {
     let context_note = match path_context {
-        Some(p) => format!("\nProject context path: {}", p),
+        Some(p) => format!("\nProject path: {}", p),
         None => String::new(),
     };
 
     let full_task = format!(
-        "User's request:\n\"{task}\"{context_note}\n\n\
-         Your task:\
-         \n1. Rephrase and expand this request to make it crystal clear\
-         \n2. Ask clarifying questions if anything is ambiguous\
-         \n3. Output the expanded understanding in a clear format\n\n\
-         Example format:\n\
-         **Understanding:** [Rephrase the core request]\n\
-         **Goals:** [List specific goals]\n\
-         **Scope:** [Define what is/isn't included]\n\
-         **Questions:** [Any clarifications needed?]"
+        "Task: {task}{context_note}\n\n\
+         Rephrase this task clearly and concisely. Output ONLY the following format, nothing else:\n\n\
+         **Understanding:** [One sentence: what the user wants]\n\
+         **Goals:** [2-3 bullet points of specific goals]\n\
+         **Scope:** [What's included and not included]\n\
+         **Questions:** [Any ambiguities? List them or write 'None']"
     );
 
     text_agent(&full_task, model, ollama_url)
         .system_prompt(
-            "You are a task clarifier. Your job is to ensure the user's request is fully understood.\
-             \nRephrase the task clearly, break it down into goals, define scope, and ask clarifying questions if needed.\
-             \nBe concise but thorough.",
+            "You are a task clarifier. Output ONLY the requested format. Be direct and concise. Do not explain, do not add extra text.",
         )
         .task_type("clarification")
 }
