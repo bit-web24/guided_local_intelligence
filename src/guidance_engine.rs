@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::agents::{
@@ -12,6 +12,8 @@ use crate::agents::{
     verifier_agent,
 };
 use crate::context_summarizer::ContextSummarizer;
+use crate::task_requirements::{infer_task_requirements, TaskRequirements};
+use agent_b::HistoryEntry;
 
 pub struct GuidanceEngine {
     pub model: String,
@@ -19,8 +21,6 @@ pub struct GuidanceEngine {
     pub max_loops: usize,
     pub max_steps: usize,
     pub path_context: Option<String>,
-    /// Directory where reports are saved (created on demand).
-    pub reports_dir: String,
 }
 
 const PROGRESS_STATE_MARKER: &str = "\n--- GLI_RESUME_STATE ---\n";
@@ -53,7 +53,6 @@ impl GuidanceEngine {
         max_loops: usize,
         max_steps: usize,
         path_context: Option<String>,
-        reports_dir: impl Into<String>,
     ) -> Self {
         Self {
             model: model.into(),
@@ -61,16 +60,16 @@ impl GuidanceEngine {
             max_loops,
             max_steps,
             path_context,
-            reports_dir: reports_dir.into(),
         }
     }
 
     /// Run the Progressive Guidance Loop for the given task.
-    /// Returns the final synthesized answer and saves a report to `reports_dir`.
+    /// Returns the final synthesized answer.
     pub async fn run(&self, task: &str) -> Result<String> {
         let start_time = std::time::Instant::now();
         let mut current_task = task.to_string();
         let mut final_output = String::new();
+        let task_requirements = infer_task_requirements(task, self.path_context.as_deref());
         let mut progress = self
             .load_progress(task)
             .unwrap_or_else(|| ProgressState::new(task));
@@ -143,6 +142,7 @@ impl GuidanceEngine {
                         .run_agent(planner_agent(
                             &current_task,
                             self.path_context.as_deref(),
+                            &task_requirements,
                             &self.model,
                             &self.ollama_url,
                             self.max_steps,
@@ -254,14 +254,18 @@ impl GuidanceEngine {
                     &format!("\n{}\n", stage_line("PLAN", None)),
                 )?;
                 let plan = self
-                    .run_agent(planner_agent(
-                        &current_task,
-                        self.path_context.as_deref(),
-                        &self.model,
-                        &self.ollama_url,
-                        self.max_steps,
-                        memory.clone(),
-                    ))
+                    .run_agent_enforcing_tools(
+                        planner_agent(
+                            &current_task,
+                            self.path_context.as_deref(),
+                            &task_requirements,
+                            &self.model,
+                            &self.ollama_url,
+                            self.max_steps,
+                            memory.clone(),
+                        ),
+                        ToolEnforcement::for_planning(&task_requirements),
+                    )
                     .await?;
                 println!("{}", plan.trim().dimmed());
                 self.append_progress_text(&mut progress, plan.trim())?;
@@ -300,18 +304,27 @@ impl GuidanceEngine {
                     )?;
                     println!("{}", format!("  → {}", step).cyan());
 
+                    let step_requirements = requirements_for_step(
+                        step,
+                        &task_requirements,
+                        self.path_context.as_deref(),
+                    );
                     let result = self
-                        .run_agent(executor_agent(
-                            step,
-                            idx,
-                            steps.len(),
-                            &accumulated_context,
-                            self.path_context.as_deref(),
-                            &self.model,
-                            &self.ollama_url,
-                            self.max_steps,
-                            memory.clone(),
-                        ))
+                        .run_agent_enforcing_tools(
+                            executor_agent(
+                                step,
+                                idx,
+                                steps.len(),
+                                &accumulated_context,
+                                self.path_context.as_deref(),
+                                &step_requirements,
+                                &self.model,
+                                &self.ollama_url,
+                                self.max_steps,
+                                memory.clone(),
+                            ),
+                            ToolEnforcement::for_execution(&step_requirements),
+                        )
                         .await?;
 
                     println!("{}", result.trim().dimmed());
@@ -410,10 +423,6 @@ impl GuidanceEngine {
                 }
             }
 
-            if let Err(e) = self.save_report(task, &final_output) {
-                eprintln!("{}", format!("  ⚠  Could not save report: {}", e).yellow());
-            }
-
             let elapsed = start_time.elapsed();
             let elapsed_message =
                 format!("  ⏱  Total Execution Time: {:.1} seconds", elapsed.as_secs_f64());
@@ -439,53 +448,6 @@ impl GuidanceEngine {
                 Err(e)
             }
         }
-    }
-
-    // ── Report saving ────────────────────────────────────────────────────────
-
-    fn save_report(&self, task: &str, content: &str) -> Result<()> {
-        // Create Reports/ directory if it doesn't exist
-        let reports_path = Path::new(&self.reports_dir);
-        fs::create_dir_all(reports_path)?;
-
-        // Filename: sanitised task slug + timestamp
-        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-        let slug: String = task
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() {
-                    c.to_ascii_lowercase()
-                } else {
-                    '_'
-                }
-            })
-            .take(40)
-            .collect::<String>()
-            .trim_matches('_')
-            .to_string();
-        let filename = format!("{}_{}.md", timestamp, slug);
-        let filepath = reports_path.join(&filename);
-
-        // Compose the markdown report
-        let report = format!(
-            "# GLI Report\n\n\
-             **Task:** {task}\n\
-             **Model:** {model}\n\
-             **Generated:** {ts}\n\n\
-             ---\n\n\
-             {content}\n",
-            task = task,
-            model = self.model,
-            ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-            content = content,
-        );
-
-        fs::write(&filepath, report)?;
-        println!(
-            "\n{}",
-            format!("  📄  Report saved → {}", filepath.display()).bright_green()
-        );
-        Ok(())
     }
 
     fn progress_path(&self) -> Result<PathBuf> {
@@ -559,6 +521,43 @@ impl GuidanceEngine {
         let mut engine = builder.build()?;
         let answer = engine.run().await?;
         Ok(answer)
+    }
+
+    async fn run_agent_enforcing_tools(
+        &self,
+        builder: agent_b::AgentBuilder,
+        enforcement: ToolEnforcement,
+    ) -> Result<String> {
+        let mut engine = builder.build()?;
+        let answer = engine.run().await?;
+
+        if let Some(reason) = missing_required_tool_use(&engine.memory.history, &enforcement) {
+            anyhow::bail!(reason);
+        }
+
+        Ok(answer)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ToolEnforcement {
+    require_filesystem: bool,
+    require_web_search: bool,
+}
+
+impl ToolEnforcement {
+    fn for_planning(requirements: &TaskRequirements) -> Self {
+        Self {
+            require_filesystem: requirements.require_filesystem_before_planning,
+            require_web_search: false,
+        }
+    }
+
+    fn for_execution(requirements: &TaskRequirements) -> Self {
+        Self {
+            require_filesystem: requirements.require_filesystem_tools,
+            require_web_search: requirements.require_web_search,
+        }
     }
 }
 
@@ -640,4 +639,98 @@ fn stage_line(stage: &str, detail: Option<&str>) -> String {
     };
     let dashes = "━".repeat(50usize.saturating_sub(label.len()));
     format!("{}{}", label, dashes)
+}
+
+fn requirements_for_step(
+    step: &str,
+    base: &TaskRequirements,
+    path_context: Option<&str>,
+) -> TaskRequirements {
+    let mut req = base.clone();
+    let step_lower = step.to_lowercase();
+
+    if !base.require_filesystem_tools && path_context.is_some() {
+        req.require_filesystem_tools = contains_any(
+            &step_lower,
+            &[
+                "project",
+                "repo",
+                "repository",
+                "code",
+                "codebase",
+                "file",
+                "files",
+                "workspace",
+                "implementation",
+            ],
+        );
+    }
+
+    if !base.require_web_search {
+        req.require_web_search = contains_any(
+            &step_lower,
+            &[
+                "latest",
+                "current",
+                "recent",
+                "today",
+                "official docs",
+                "documentation",
+                "web",
+                "internet",
+                "external",
+                "online",
+            ],
+        );
+    }
+
+    req
+}
+
+fn missing_required_tool_use(
+    history: &[HistoryEntry],
+    enforcement: &ToolEnforcement,
+) -> Option<String> {
+    if enforcement.require_filesystem && !used_filesystem_tool(history) {
+        return Some(
+            "Mandatory filesystem tool use was required by task policy, but the agent answered without any successful filesystem inspection.".to_string(),
+        );
+    }
+
+    if enforcement.require_web_search && !used_web_search(history) {
+        return Some(
+            "Mandatory web search was required by task policy, but the agent answered without any successful web lookup.".to_string(),
+        );
+    }
+
+    None
+}
+
+fn used_filesystem_tool(history: &[HistoryEntry]) -> bool {
+    history
+        .iter()
+        .any(|entry| entry.success && is_filesystem_tool(&entry.tool.name))
+}
+
+fn used_web_search(history: &[HistoryEntry]) -> bool {
+    history
+        .iter()
+        .any(|entry| entry.success && entry.tool.name == "web_search")
+}
+
+fn is_filesystem_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "read_file"
+            | "read_multiple_files"
+            | "list_directory"
+            | "directory_tree"
+            | "search_files"
+            | "get_file_info"
+            | "list_allowed_directories"
+    )
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
 }

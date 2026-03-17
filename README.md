@@ -25,7 +25,7 @@ User Input
   -> Final Output
 ```
 
-The main design goal is to improve task alignment, reduce hallucinated reasoning, and make local models more reliable on multi-step tasks such as repository analysis, technical documentation, and structured investigation.
+The main design goal is to improve task alignment, reduce hallucinated reasoning, and make local models more reliable on general multi-step tasks such as research, local file work, technical documentation, structured investigation, and other instruction-following workflows.
 
 ## Architecture
 
@@ -52,11 +52,10 @@ Core project components:
 
 - Clarification-first workflow before any planning or execution
 - Short planning and execution cycles designed for small local models
-- File and repository inspection tools exposed to agents
+- File inspection tools exposed to agents when local context is needed
 - Shared memory between steps for important findings
 - Progress persistence and resume support
-- Markdown report generation to a configurable reports directory
-- Optional path-aware execution for repository tasks
+- Optional path-aware execution for tasks that depend on local files
 
 ## Requirements
 
@@ -85,19 +84,19 @@ The binary name is `gli`.
 Basic form:
 
 ```bash
-cargo run -- "analyze this repository"
+cargo run -- "write a rollout plan for migrating our auth flow"
 ```
 
 Using a project path:
 
 ```bash
-cargo run -- "analyze this repository" --path .
+cargo run -- "summarize the structure of this project" --path .
 ```
 
 Using a specific model:
 
 ```bash
-cargo run -- "document this codebase" --model qwen2.5:1.5b --path .
+cargo run -- "draft release notes from this project" --model qwen2.5:1.5b --path .
 ```
 
 Built binary:
@@ -113,9 +112,7 @@ Built binary:
 - `--ollama_url`: API base URL, default `http://localhost:11434/v1`
 - `--max-loops`: maximum refinement loops, default `3`
 - `--max-steps`: maximum agent steps per planner/executor run, default `17`
-- `--path`, `-p`: optional project/filesystem context
-- `--reports-dir`: output directory for markdown reports, default `./Reports`
-
+- `--path`, `-p`: optional local filesystem context
 ## Clarification Stage
 
 One of the main implemented improvements is the clarification stage that runs before the normal loop. Instead of planning immediately from a vague prompt, GLI first produces:
@@ -129,8 +126,8 @@ It then shows a compact plan preview and asks the user to confirm or clarify. If
 
 ## Typical Use Cases
 
-- Repository architecture analysis
-- Multi-step codebase investigation
+- General instruction following for small local models
+- Local workspace analysis when a path is provided
 - Technical documentation generation
 - Structured task decomposition for local models
 - Guided execution where verification and reflection matter
@@ -163,5 +160,6 @@ Useful source documents:
 ## Notes
 
 - Small-model compatibility is a primary design constraint.
+- The prompts are written to push models toward very small, reliable execution steps instead of broad reasoning jumps.
 - Tool calls are embedded in prompts in a compact JSON format to work better with local Ollama-served models.
 - The displayed startup banner in code still mentions `PLAN -> EXEC -> SYNTHESIZE -> REFLECT`, but the implemented engine includes a clarification stage and explicit verification before synthesis.

@@ -4,7 +4,7 @@ use clap::Parser;
 #[derive(Parser, Debug, Clone)]
 #[command(name = "gli", author, version, about, long_about = None)]
 pub struct Config {
-    /// The task to perform (e.g. "analyze this repository")
+    /// The task to perform (e.g. "draft a migration plan" or "analyze this repository")
     pub task: String,
 
     /// Ollama model name to use
@@ -19,7 +19,7 @@ pub struct Config {
     #[arg(long, default_value_t = 3)]
     pub max_loops: usize,
 
-    /// Optional path context for repository / filesystem tasks
+    /// Optional path context for tasks that depend on local files
     #[arg(long, short)]
     pub path: Option<String>,
 
@@ -27,7 +27,4 @@ pub struct Config {
     #[arg(long, default_value_t = 17)]
     pub max_steps: usize,
 
-    /// Directory where GLI saves markdown reports after each run
-    #[arg(long, default_value = "./Reports")]
-    pub reports_dir: String,
 }

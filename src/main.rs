@@ -2,6 +2,7 @@ mod agents;
 mod config;
 mod context_summarizer;
 mod guidance_engine;
+mod task_requirements;
 mod tools;
 
 use clap::Parser;
@@ -46,7 +47,6 @@ async fn main() -> anyhow::Result<()> {
         "Max loops:".bold(),
         cfg.max_loops.to_string().cyan()
     );
-    println!("  {} {}", "Reports dir:".bold(), cfg.reports_dir.cyan());
     println!();
 
     // ── Run the guidance engine ──────────────────────────────────────────────
@@ -56,7 +56,6 @@ async fn main() -> anyhow::Result<()> {
         cfg.max_loops,
         cfg.max_steps,
         cfg.path.clone(),
-        cfg.reports_dir.clone(),
     );
 
     match engine.run(&cfg.task).await {
