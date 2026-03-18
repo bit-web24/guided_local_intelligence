@@ -210,3 +210,32 @@ fn urlencoding_simple(s: &str) -> String {
     }
     out
 }
+
+/// Attempt to extract a JSON tool call from free-form model output.
+/// Tries several common patterns small models use when they don't output raw JSON.
+/// Returns None if no recognisable tool call structure is found.
+pub fn extract_tool_call_from_text(text: &str) -> Option<serde_json::Value> {
+    use regex::Regex;
+
+    let patterns: &[&str] = &[
+        r"(?s)```json\s*(\{.*?\})\s*```",
+        r"(?s)```\s*(\{.*?\})\s*```",
+        r"TOOL_CALL:\s*(\{.*?\})",
+        r#"(?s)(\{"name"\s*:.*?"arguments"\s*:.*?\})"#,
+        r#"(?s)(\{"name"\s*:.*?"arguments"\s*:\s*\{[^}]*\}\s*\})"#,
+    ];
+
+    for pattern in patterns {
+        if let Ok(re) = Regex::new(pattern) {
+            if let Some(cap) = re.captures(text) {
+                let candidate = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(candidate) {
+                    if val.get("name").is_some() {
+                        return Some(val);
+                    }
+                }
+            }
+        }
+    }
+    None
+}

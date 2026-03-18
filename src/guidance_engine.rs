@@ -13,6 +13,7 @@ use crate::agents::{
 };
 use crate::context_summarizer::ContextSummarizer;
 use crate::task_requirements::{infer_task_requirements, TaskRequirements};
+use crate::tools::extract_tool_call_from_text;
 use agent_b::HistoryEntry;
 
 pub struct GuidanceEngine {
@@ -184,6 +185,17 @@ impl GuidanceEngine {
                     if user_input.eq_ignore_ascii_case("y")
                         || user_input.eq_ignore_ascii_case("yes")
                     {
+                        // Write the confirmed clarification into shared memory so all agents can access it
+                        if let Ok(mut mem) = memory.lock() {
+                            mem.insert(
+                                "task_clarification".to_string(),
+                                clarification.trim().to_string(),
+                            );
+                            mem.insert(
+                                "confirmed_task".to_string(),
+                                current_task.trim().to_string(),
+                            );
+                        }
                         break;
                     } else if !user_input.is_empty() {
                         clarification_loop_count += 1;
@@ -309,23 +321,50 @@ impl GuidanceEngine {
                         &task_requirements,
                         self.path_context.as_deref(),
                     );
-                    let result = self
-                        .run_agent_enforcing_tools(
-                            executor_agent(
-                                step,
-                                idx,
-                                steps.len(),
-                                &accumulated_context,
-                                self.path_context.as_deref(),
-                                &step_requirements,
-                                &self.model,
-                                &self.ollama_url,
-                                self.max_steps,
-                                memory.clone(),
-                            ),
-                            ToolEnforcement::for_execution(&step_requirements),
-                        )
-                        .await?;
+                    let result = {
+                        let first_attempt = self
+                            .run_agent_enforcing_tools(
+                                executor_agent(
+                                    step,
+                                    idx,
+                                    steps.len(),
+                                    &accumulated_context,
+                                    self.path_context.as_deref(),
+                                    &step_requirements,
+                                    &self.model,
+                                    &self.ollama_url,
+                                    self.max_steps,
+                                    memory.clone(),
+                                ),
+                                ToolEnforcement::for_execution(&step_requirements),
+                            )
+                            .await;
+
+                        match first_attempt {
+                            Ok(r) => r,
+                            Err(e) => {
+                                let retry_step = format!(
+                                    "{step}\n\nPREVIOUS ATTEMPT FAILED: {e}\n\
+                                     Try a different approach. If you need a file path, call \
+                                     list_directory first. If a tool call failed, change the \
+                                     arguments or use a different tool."
+                                );
+                                self.run_agent(executor_agent(
+                                    &retry_step,
+                                    idx,
+                                    steps.len(),
+                                    &accumulated_context,
+                                    self.path_context.as_deref(),
+                                    &step_requirements,
+                                    &self.model,
+                                    &self.ollama_url,
+                                    self.max_steps,
+                                    memory.clone(),
+                                ))
+                                .await?
+                            }
+                        }
+                    };
 
                     println!("{}", result.trim().dimmed());
                     self.append_progress_text(&mut progress, result.trim())?;
@@ -530,6 +569,7 @@ impl GuidanceEngine {
     ) -> Result<String> {
         let mut engine = builder.build()?;
         let answer = engine.run().await?;
+        let _ = extract_tool_call_from_text(&answer);
 
         if let Some(reason) = missing_required_tool_use(&engine.memory.history, &enforcement) {
             anyhow::bail!(reason);

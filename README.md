@@ -63,6 +63,51 @@ Core project components:
 - Ollama-compatible local model endpoint
 - Local checkout of `Agent-B` at `../Agent-B`
 
+## Model Requirements
+
+GLI requires a capable model for reliable tool-use and multi-step code tasks.
+The default model is `gpt-oss:120b-cloud`.
+
+### Recommended models (in order of capability)
+
+| Model | VRAM | Use case |
+|---|---|---|
+| `gpt-oss:120b-cloud` | Cloud | Default - strongest coding/reasoning option in this setup |
+| `qwen2.5-coder:7b` (via `gli-coder`) | 6-8 GB | Local tuned coding model |
+| `qwen2.5:7b` | 6-8 GB | General tasks, documentation |
+| `qwen2.5-coder:3b` | 3-4 GB | Memory-constrained machines |
+| `deepseek-coder:6.7b` | 5-6 GB | Alternative coding model |
+
+### One-time setup
+
+```bash
+# Pull the base model
+ollama pull qwen2.5-coder:7b
+
+# Create the tuned variant with the correct context window and temperature
+cat > Modelfile << 'EOF'
+FROM qwen2.5-coder:7b
+PARAMETER num_ctx 8192
+PARAMETER num_predict 2048
+PARAMETER temperature 0.1
+PARAMETER repeat_penalty 1.1
+EOF
+
+ollama create gli-coder -f Modelfile
+
+# Verify tool call support
+./scripts/check_ollama_tools.sh gpt-oss:120b-cloud
+
+# Run a quick benchmark
+./scripts/benchmark_model.sh gpt-oss:120b-cloud
+```
+
+### Why these parameters matter
+
+- `num_ctx 8192` keeps longer GLI runs from dropping earlier steps due to context limits.
+- `temperature 0.1` makes tool-call formatting more deterministic.
+- `repeat_penalty 1.1` reduces step repetition and helps the model keep moving forward.
+
 The Cargo manifest currently depends on:
 
 ```toml
@@ -96,7 +141,7 @@ cargo run -- "summarize the structure of this project" --path .
 Using a specific model:
 
 ```bash
-cargo run -- "draft release notes from this project" --model qwen2.5:1.5b --path .
+cargo run -- "draft release notes from this project" --model gpt-oss:120b-cloud --path .
 ```
 
 Built binary:
@@ -108,7 +153,7 @@ Built binary:
 ### CLI Options
 
 - Positional `task`: the task GLI should perform
-- `--model`: model name, default `qwen2.5:1.5b`
+- `--model`: model name, default `gpt-oss:120b-cloud`
 - `--ollama_url`: API base URL, default `http://localhost:11434/v1`
 - `--max-loops`: maximum refinement loops, default `3`
 - `--max-steps`: maximum agent steps per planner/executor run, default `17`

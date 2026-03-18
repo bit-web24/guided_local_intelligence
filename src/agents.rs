@@ -45,15 +45,16 @@ Wait for the tool result before writing anything else.
 If you do NOT need a tool right now, answer directly in plain text."#;
 
 const GENERAL_AGENT_PRINCIPLES: &str = r#"
-GENERAL RULES:
-- You are a production-grade general instruction-following agent.
-- Your job is to complete exactly what the user asked, not just analyze.
-- Break work into the smallest reliable units. Prefer many atomic steps over a few broad steps.
-- Each step should do one thing, produce one concrete outcome, and reduce uncertainty.
-- Never guess. If information is missing, inspect with tools or state the uncertainty explicitly.
-- Use the path context only when it is relevant to the task.
-- Prefer direct, verifiable outputs over speculation or filler.
-- Keep replies compact so small local models stay accurate."#;
+RULES (follow exactly, no exceptions):
+- Complete the task. Do not describe what you will do — do it immediately.
+- Use one tool per reply. Wait for the result before calling the next tool.
+- Never begin a reply with "I will now...", "Let me...", or "I'll...". Act.
+- If you need file contents: read the file. If you need a fact: search it.
+- Output only your concrete result or a single tool call JSON block.
+- Do not repeat previous results back. Move forward every reply.
+- Maximum prose before a tool call: two sentences.
+- If a tool returns an error, try a different approach — do not repeat the same call.
+- When done with a step, call write_memory with any key finding, path, or decision."#;
 
 // ── Agent base constructors ───────────────────────────────────────────────────
 
@@ -116,16 +117,22 @@ pub fn planner_agent(
 
     // Compact system prompt + explicit tool schema so small models know the format.
     let system_prompt = format!(
-        "You are the planning stage of a general-purpose agent.\
+         "You are the planning stage of a general-purpose agent.\
          \n{GENERAL_AGENT_PRINCIPLES}\
          \nPLANNING RULES:\
          \n- Output ONLY a numbered list.\
-         \n- Create 4-8 very small steps.\
+         \n- Create 6-14 very small steps.\
          \n- Each step must be atomic, observable, and executable by one follow-up agent run.\
          \n- Put information-gathering before decisions, decisions before actions, and actions before final packaging.\
          \n- If local files are relevant, first inspect the workspace with tools before finalizing the plan.\
          \n- Do not combine multiple actions in one step.\
          \n- No explanations, headings, or prose outside the numbered list.\
+         \n- Each step must be so small that a single tool call can complete it.\
+         \n- Bad step: 'Analyze the codebase'. Good step: 'Read src/main.rs'.\
+         \n- Bad step: 'Set up the environment'. Good step: 'Run cargo check and record errors'.\
+         \n- Name the specific tool each step will use in parentheses, e.g. (read_file).\
+         \n- If implementing a feature, decompose it: read existing code → locate insertion \
+            point → write new code → verify it compiles. Never merge these into one step.\
          {TOOL_SCHEMA_BLOCK}"
     );
 
@@ -176,14 +183,18 @@ pub fn executor_agent(
 
     // Compact system prompt + explicit tool schema.
     let system_prompt = format!(
-        "You are the execution stage of a general-purpose agent.\
+         "You are the execution stage of a general-purpose agent.\
          \n{GENERAL_AGENT_PRINCIPLES}\
          \nEXECUTION RULES:\
          \n- Execute exactly one step and do not drift into later steps.\
          \n- If the step depends on local files, inspect them with tools before concluding.\
          \n- If the step depends on outside facts, use web_search before concluding.\
          \n- Base claims only on tool output or the provided context.\
-         \n- Report in 2-5 short sentences. Include what was done, what was found, and any uncertainty.\
+         \n- Report in 2-5 short sentences: what was done, what was found, any uncertainty.\
+         \n- If the step depends on a file path you are unsure about, call list_directory first.\
+         \n- After completing the step successfully, call write_memory to save any important \
+            finding. Use a short descriptive key like 'auth_file_path' or 'db_schema'.\
+         \n- If this step fails, state the error clearly and suggest one alternative approach.\
          {TOOL_SCHEMA_BLOCK}"
     );
 
@@ -202,7 +213,7 @@ pub fn executor_agent(
 /// VerifierAgent — text-only; checks provided results for errors.
 pub fn verifier_agent(results: &str, model: &str, ollama_url: &str) -> AgentBuilder {
     // Truncate to keep prompt manageable for small models
-    let trimmed: String = results.chars().take(2000).collect();
+    let trimmed: String = results.chars().take(4000).collect();
     let full_task = format!(
         "Review these results. Fix errors and hallucinations. \
          Mark uncertain claims with [?]. Return the corrected version:\n\n{trimmed}"
@@ -224,7 +235,7 @@ pub fn synthesizer_agent(
     model: &str,
     ollama_url: &str,
 ) -> AgentBuilder {
-    let trimmed: String = verified_results.chars().take(2000).collect();
+    let trimmed: String = verified_results.chars().take(4000).collect();
     let full_task = format!(
         "Write a clear markdown answer for: \"{original_task}\"\
          \nBased on these findings:\n{trimmed}"
@@ -282,7 +293,7 @@ pub fn reflection_agent(
     model: &str,
     ollama_url: &str,
 ) -> AgentBuilder {
-    let trimmed: String = output.chars().take(1500).collect();
+    let trimmed: String = output.chars().take(2500).collect();
     let full_task = format!(
         "Task: \"{original_task}\"\
          \nOutput:\n{trimmed}\

@@ -8,7 +8,7 @@ pub struct Config {
     pub task: String,
 
     /// Ollama model name to use
-    #[arg(long, default_value = "qwen2.5:1.5b")]
+    #[arg(long, default_value = "gpt-oss:120b-cloud")]
     pub model: String,
 
     /// Ollama API base URL
@@ -16,7 +16,7 @@ pub struct Config {
     pub ollama_url: String,
 
     /// Maximum number of PGL loop iterations
-    #[arg(long, default_value_t = 3)]
+    #[arg(long, default_value_t = 12)]
     pub max_loops: usize,
 
     /// Optional path context for tasks that depend on local files
@@ -24,7 +24,6 @@ pub struct Config {
     pub path: Option<String>,
 
     /// Maximum agent steps per sub-agent run (for Planner and Executor)
-    #[arg(long, default_value_t = 17)]
+    #[arg(long, default_value_t = 23)]
     pub max_steps: usize,
-
 }

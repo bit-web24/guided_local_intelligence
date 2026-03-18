@@ -42,9 +42,9 @@ impl ContextSummarizer {
             })
             .map(|line| {
                 let trimmed = line.trim();
-                // Keep step brief - first 80 chars max
-                if trimmed.len() > 80 {
-                    format!("{}...", &trimmed[..77])
+                // Keep step brief but preserve more detail
+                if trimmed.len() > 123 {
+                    format!("{}...", &trimmed[..120])
                 } else {
                     trimmed.to_string()
                 }
@@ -62,9 +62,9 @@ impl ContextSummarizer {
     pub fn summarize_step_result(result: &str, step_num: usize) -> String {
         let trimmed = result.trim();
 
-        // Keep only first 150 chars + summary
-        let summary = if trimmed.len() > 150 {
-            let first_part = &trimmed[..150];
+        // Keep only first 300 chars + summary
+        let summary = if trimmed.len() > 300 {
+            let first_part = &trimmed[..300];
             // Try to find a natural break point
             if let Some(pos) = first_part.rfind('.') {
                 format!("{}...", &first_part[..pos + 1])
