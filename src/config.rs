@@ -16,7 +16,7 @@ pub struct Config {
     pub ollama_url: String,
 
     /// Maximum number of PGL loop iterations
-    #[arg(long, default_value_t = 12)]
+    #[arg(long, default_value_t = 9)]
     pub max_loops: usize,
 
     /// Optional path context for tasks that depend on local files

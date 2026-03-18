@@ -447,6 +447,10 @@ impl GuidanceEngine {
                     let done_message = "  ✓  DONE — output accepted.";
                     println!("\n{}", done_message.green().bold());
                     self.append_progress_text(&mut progress, &format!("\n{done_message}"))?;
+                    progress.status = "completed".to_string();
+                    progress.stage = "COMPLETED".to_string();
+                    progress.final_output = final_output.clone();
+                    self.write_progress(&progress)?;
                     break;
                 } else {
                     let reason = extract_refine_reason(&reflection);
@@ -648,12 +652,29 @@ fn parse_steps(plan: &str) -> Vec<String> {
 }
 
 fn is_done(reflection: &str) -> bool {
-    let upper = reflection.to_uppercase();
-    // "DONE" present but "REFINE" is not the dominant signal
-    upper.contains("DONE") && !upper.contains("REFINE:")
+    match reflection_terminal_decision(reflection) {
+        ReflectionDecision::Done => true,
+        ReflectionDecision::Refine | ReflectionDecision::Unknown => false,
+    }
 }
 
 fn extract_refine_reason(reflection: &str) -> String {
+    if let ReflectionDecision::Refine = reflection_terminal_decision(reflection) {
+        if let Some(last_line) = reflection
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+        {
+            if let Some(reason) = last_line.strip_prefix("REFINE:") {
+                let reason = reason.trim();
+                if !reason.is_empty() {
+                    return reason.to_string();
+                }
+            }
+        }
+    }
+
     for line in reflection.lines() {
         let upper = line.to_uppercase();
         if let Some(pos) = upper.find("REFINE:") {
@@ -670,6 +691,35 @@ fn extract_refine_reason(reflection: &str) -> String {
         .unwrap_or("output needs improvement")
         .trim()
         .to_string()
+}
+
+enum ReflectionDecision {
+    Done,
+    Refine,
+    Unknown,
+}
+
+fn reflection_terminal_decision(reflection: &str) -> ReflectionDecision {
+    let Some(last_line) = reflection
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+    else {
+        return ReflectionDecision::Unknown;
+    };
+
+    if last_line.eq_ignore_ascii_case("DONE") {
+        return ReflectionDecision::Done;
+    }
+
+    if last_line.len() >= "REFINE:".len()
+        && last_line[.. "REFINE:".len()].eq_ignore_ascii_case("REFINE:")
+    {
+        return ReflectionDecision::Refine;
+    }
+
+    ReflectionDecision::Unknown
 }
 
 fn stage_line(stage: &str, detail: Option<&str>) -> String {
@@ -773,4 +823,31 @@ fn is_filesystem_tool(tool_name: &str) -> bool {
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reflection_done_when_last_line_is_done() {
+        let reflection = "REFINE: earlier draft was incomplete.\nDONE";
+        assert!(is_done(reflection));
+    }
+
+    #[test]
+    fn reflection_refine_when_last_line_is_refine() {
+        let reflection = "Looks close.\nREFINE: add the missing print statement";
+        assert!(!is_done(reflection));
+        assert_eq!(
+            extract_refine_reason(reflection),
+            "add the missing print statement"
+        );
+    }
+
+    #[test]
+    fn reflection_reason_falls_back_when_no_terminal_reason() {
+        let reflection = "Needs work overall";
+        assert_eq!(extract_refine_reason(reflection), "Needs work overall");
+    }
 }
