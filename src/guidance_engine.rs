@@ -385,8 +385,11 @@ impl GuidanceEngine {
                     &mut progress,
                     &format!("\n{}\n", stage_line("VERIFY", None)),
                 )?;
-                let verification_input =
-                    ContextSummarizer::summarize_for_verification(&plan_summary, &step_summaries);
+                let verification_input = ContextSummarizer::summarize_for_verification(
+                    &plan_summary,
+                    &step_summaries,
+                    &memory_snapshot(&memory),
+                );
                 let verified = self
                     .run_agent(verifier_agent(
                         &verification_input,
@@ -410,7 +413,7 @@ impl GuidanceEngine {
                 )?;
                 let synthesized = self
                     .run_agent(synthesizer_agent(
-                        &verification_summary,
+                        &verified,
                         task,
                         &self.model,
                         &self.ollama_url,
@@ -823,6 +826,29 @@ fn is_filesystem_tool(tool_name: &str) -> bool {
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn memory_snapshot(memory: &Arc<Mutex<HashMap<String, String>>>) -> String {
+    let Ok(mem) = memory.lock() else {
+        return String::new();
+    };
+
+    if mem.is_empty() {
+        return String::new();
+    }
+
+    let mut entries: Vec<_> = mem.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+
+    entries
+        .into_iter()
+        .take(10)
+        .map(|(key, value)| {
+            let compact_value: String = value.chars().take(160).collect();
+            format!("- {}: {}", key, compact_value.replace('\n', " "))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]

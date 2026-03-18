@@ -111,12 +111,26 @@ impl ContextSummarizer {
     }
 
     /// Build a compact packet for verification from plan + execution summaries.
-    pub fn summarize_for_verification(plan_summary: &str, step_summaries: &[String]) -> String {
-        format!(
-            "{}\n{}\nReview only these compact findings.",
-            plan_summary.trim(),
-            Self::summarize_execution(step_summaries).trim()
-        )
+    pub fn summarize_for_verification(
+        plan_summary: &str,
+        step_summaries: &[String],
+        memory_snapshot: &str,
+    ) -> String {
+        let mut sections = vec![
+            plan_summary.trim().to_string(),
+            Self::summarize_execution(step_summaries).trim().to_string(),
+        ];
+
+        if !memory_snapshot.trim().is_empty() {
+            sections.push(format!("MEMORY:\n{}", memory_snapshot.trim()));
+        }
+
+        sections.push(
+            "Review these findings for unsupported claims, contradictions, and missing constraints."
+                .to_string(),
+        );
+
+        sections.join("\n")
     }
 
     /// Summarize verification results
@@ -260,7 +274,7 @@ mod tests {
 
     #[test]
     fn test_summarize_long_result() {
-        let long_result = "a".repeat(200);
+        let long_result = "a".repeat(600);
         let summary = ContextSummarizer::summarize_step_result(&long_result, 1);
         assert!(summary.len() < long_result.len());
     }
@@ -273,10 +287,12 @@ mod tests {
                 "Step 1: Read auth controller [Key: FOUND]".to_string(),
                 "Step 2: Found null token path [Key: ERROR]".to_string(),
             ],
+            "- task_clarification: fix the auth flow safely",
         );
 
         assert!(output.contains("PLAN:"));
         assert!(output.contains("EXECUTION:"));
         assert!(output.contains("Step 2"));
+        assert!(output.contains("MEMORY:"));
     }
 }

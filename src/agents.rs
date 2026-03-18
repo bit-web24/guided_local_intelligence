@@ -56,6 +56,49 @@ RULES (follow exactly, no exceptions):
 - If a tool returns an error, try a different approach — do not repeat the same call.
 - When done with a step, call write_memory with any key finding, path, or decision."#;
 
+#[derive(Debug, Clone, Copy)]
+struct ModelTuning {
+    planner_min_steps: usize,
+    planner_max_steps: usize,
+    execution_context_chars: usize,
+    verification_chars: usize,
+    synthesis_chars: usize,
+    execution_report_rule: &'static str,
+}
+
+impl ModelTuning {
+    fn for_model(model: &str) -> Self {
+        let normalized = model.to_lowercase();
+        let is_small_model = [
+            "1b", "1.5b", "2b", "3b", "3.8b", "4b", "small", "mini",
+        ]
+        .iter()
+        .any(|needle| normalized.contains(needle));
+
+        if is_small_model {
+            Self {
+                planner_min_steps: 4,
+                planner_max_steps: 8,
+                execution_context_chars: 450,
+                verification_chars: 3200,
+                synthesis_chars: 3200,
+                execution_report_rule:
+                    "Report in 1-3 short sentences: what was done, what was found, any uncertainty.",
+            }
+        } else {
+            Self {
+                planner_min_steps: 6,
+                planner_max_steps: 14,
+                execution_context_chars: 800,
+                verification_chars: 5000,
+                synthesis_chars: 5000,
+                execution_report_rule:
+                    "Report in 2-5 short sentences: what was done, what was found, any uncertainty.",
+            }
+        }
+    }
+}
+
 // ── Agent base constructors ───────────────────────────────────────────────────
 
 /// Tool-using base: for agents that need to read files (Planner, Executor).
@@ -105,14 +148,22 @@ pub fn planner_agent(
     max_steps: usize,
     mem: SharedMemory,
 ) -> AgentBuilder {
+    let tuning = ModelTuning::for_model(model);
     let full_task = match path_context {
         Some(p) => format!(
             "Task:\n{task}\n\nOptional workspace path:\n{p}\n\n\
              Tool policy:\n{}\n\n\
+             Before planning, read_memory(\"task_clarification\") if that key exists so your \
+             plan matches the confirmed brief.\n\
              If the task depends on local files, inspect the workspace before planning.",
             requirements.describe_for_prompt()
         ),
-        None => format!("Task:\n{task}\n\nTool policy:\n{}", requirements.describe_for_prompt()),
+        None => format!(
+            "Task:\n{task}\n\nTool policy:\n{}\n\n\
+             Before planning, read_memory(\"task_clarification\") if that key exists so your \
+             plan matches the confirmed brief.",
+            requirements.describe_for_prompt()
+        ),
     };
 
     // Compact system prompt + explicit tool schema so small models know the format.
@@ -121,9 +172,10 @@ pub fn planner_agent(
          \n{GENERAL_AGENT_PRINCIPLES}\
          \nPLANNING RULES:\
          \n- Output ONLY a numbered list.\
-         \n- Create 6-14 very small steps.\
+         \n- Create {}-{} very small steps.\
          \n- Each step must be atomic, observable, and executable by one follow-up agent run.\
          \n- Put information-gathering before decisions, decisions before actions, and actions before final packaging.\
+         \n- Prefer concrete file names, symbols, or commands over abstract wording.\
          \n- If local files are relevant, first inspect the workspace with tools before finalizing the plan.\
          \n- Do not combine multiple actions in one step.\
          \n- No explanations, headings, or prose outside the numbered list.\
@@ -133,7 +185,9 @@ pub fn planner_agent(
          \n- Name the specific tool each step will use in parentheses, e.g. (read_file).\
          \n- If implementing a feature, decompose it: read existing code → locate insertion \
             point → write new code → verify it compiles. Never merge these into one step.\
-         {TOOL_SCHEMA_BLOCK}"
+         {TOOL_SCHEMA_BLOCK}",
+        tuning.planner_min_steps,
+        tuning.planner_max_steps
     );
 
     tool_agent(
@@ -161,11 +215,12 @@ pub fn executor_agent(
     max_steps: usize,
     mem: SharedMemory,
 ) -> AgentBuilder {
+    let tuning = ModelTuning::for_model(model);
     let ctx_section = if context.is_empty() {
         String::new()
     } else {
         // Truncate context to keep the prompt short for small models
-        let trimmed: String = context.chars().take(800).collect();
+        let trimmed: String = context.chars().take(tuning.execution_context_chars).collect();
         format!("\nPrevious results:\n{trimmed}\n")
     };
 
@@ -187,15 +242,17 @@ pub fn executor_agent(
          \n{GENERAL_AGENT_PRINCIPLES}\
          \nEXECUTION RULES:\
          \n- Execute exactly one step and do not drift into later steps.\
+         \n- Read read_memory(\"task_clarification\") before acting when the step could be ambiguous.\
          \n- If the step depends on local files, inspect them with tools before concluding.\
          \n- If the step depends on outside facts, use web_search before concluding.\
          \n- Base claims only on tool output or the provided context.\
-         \n- Report in 2-5 short sentences: what was done, what was found, any uncertainty.\
+         \n- {}\
          \n- If the step depends on a file path you are unsure about, call list_directory first.\
          \n- After completing the step successfully, call write_memory to save any important \
             finding. Use a short descriptive key like 'auth_file_path' or 'db_schema'.\
          \n- If this step fails, state the error clearly and suggest one alternative approach.\
-         {TOOL_SCHEMA_BLOCK}"
+         {TOOL_SCHEMA_BLOCK}",
+        tuning.execution_report_rule
     );
 
     tool_agent(
@@ -212,11 +269,13 @@ pub fn executor_agent(
 
 /// VerifierAgent — text-only; checks provided results for errors.
 pub fn verifier_agent(results: &str, model: &str, ollama_url: &str) -> AgentBuilder {
+    let tuning = ModelTuning::for_model(model);
     // Truncate to keep prompt manageable for small models
-    let trimmed: String = results.chars().take(4000).collect();
+    let trimmed: String = results.chars().take(tuning.verification_chars).collect();
     let full_task = format!(
         "Review these results. Fix errors and hallucinations. \
-         Mark uncertain claims with [?]. Return the corrected version:\n\n{trimmed}"
+         Mark uncertain claims with [?]. Preserve concrete facts and file paths. \
+         Return the corrected version:\n\n{trimmed}"
     );
 
     text_agent(&full_task, model, ollama_url)
@@ -235,7 +294,8 @@ pub fn synthesizer_agent(
     model: &str,
     ollama_url: &str,
 ) -> AgentBuilder {
-    let trimmed: String = verified_results.chars().take(4000).collect();
+    let tuning = ModelTuning::for_model(model);
+    let trimmed: String = verified_results.chars().take(tuning.synthesis_chars).collect();
     let full_task = format!(
         "Write a clear markdown answer for: \"{original_task}\"\
          \nBased on these findings:\n{trimmed}"
