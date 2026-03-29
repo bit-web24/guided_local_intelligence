@@ -6,6 +6,12 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
+[manifest]
+members = [
+    "adp",
+    "adp-output",
+]
+
 [[package]]
 name = "adp"
 version = "0.1.0"
@@ -46,6 +52,17 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.23.0" },
     { name = "pytest-mock", specifier = ">=3.14" },
 ]
+
+[[package]]
+name = "adp-output"
+version = "0.1.0"
+source = { virtual = "adp_output" }
+dependencies = [
+    { name = "rich" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "rich", specifier = ">=14.3.3" }]
 
 [[package]]
 name = "aiohappyeyeballs"
