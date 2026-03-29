@@ -13,7 +13,8 @@ import json
 import re
 
 from adp.engine.cloud_client import call_cloud_with_history
-from adp.models.task import AnchorType, MicroTask, TaskPlan
+from adp.engine.plan_validator import validate_task_plan
+from adp.models.task import AnchorType, MicroTask, TaskKind, TaskPlan
 from adp.config import CLOUD_TEMPERATURE
 
 # ---------------------------------------------------------------------------
@@ -83,7 +84,10 @@ SCHEMA:
       "depends_on": [],
       "anchor": "JSON:",
       "parallel_group": 0,
-      "model_type": "coder"
+      "model_type": "coder",
+      "task_kind": "codegen",
+      "validator_rule": null,
+      "max_output_chars": 1200
     }
   ],
   "final_output_keys": ["key1", "key2"],
@@ -94,6 +98,23 @@ SCHEMA:
 MODEL SELECTION:
 - Set `"model_type": "coder"` for tasks writing Python, JS, SQL, HTML, JSON, TOML, etc.
 - Set `"model_type": "general"` for tasks writing prose, explanations, extracting entities, or markdown.
+
+TASK KIND SELECTION:
+- Use `"extract"` for single fact/entity extraction
+- Use `"classify"` for labels, yes/no, and routing decisions
+- Use `"transform"` for constrained rewrites
+- Use `"codegen"` for code or config generation
+- Use `"critic"` for validation and judgement tasks
+- Use `"repair"` for correction tasks
+- Use `"summarize"` for concise synthesis
+
+VALIDATOR RULES:
+- Use `"validator_rule"` only for deterministic checks.
+- Supported examples:
+  - `"contains:def create_app"`
+  - `"json_keys:name,version"`
+  - `"regex:^v?\\d+\\.\\d+$"`
+- Use `null` if no extra validation is required.
 
 FILE OUTPUT RULES:
 - If the user explicitly asks for files to be generated (e.g. "Create a FastAPI app"), set `"write_to_file": true` and provide `"output_filenames"`.
@@ -224,11 +245,15 @@ def _parse_task_plan(data: dict) -> TaskPlan:
             anchor=AnchorType(t["anchor"]),
             parallel_group=int(t["parallel_group"]),
             model_type=t.get("model_type", "coder"),
+            task_kind=TaskKind(t.get("task_kind", "codegen")),
+            validator_rule=t.get("validator_rule"),
+            max_output_chars=t.get("max_output_chars"),
         ))
 
-    return TaskPlan(
+    plan = TaskPlan(
         tasks=tasks,
         final_output_keys=data["final_output_keys"],
         output_filenames=data.get("output_filenames", []),
         write_to_file=data.get("write_to_file", True),
     )
+    return validate_task_plan(plan)

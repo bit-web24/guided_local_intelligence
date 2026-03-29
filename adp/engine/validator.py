@@ -1,10 +1,11 @@
 """Output extraction and validation by anchor type."""
 from __future__ import annotations
 
+import ast
 import json
 import re
 
-from adp.models.task import AnchorType
+from adp.models.task import AnchorType, MicroTask, ValidationResult
 
 
 def extract_after_anchor(raw_output: str, anchor: AnchorType) -> str:
@@ -63,3 +64,81 @@ def validate(output: str, anchor: AnchorType) -> tuple[bool, str]:
 
     # OUTPUT and MARKDOWN — non-empty check only
     return True, output.strip()
+
+
+def validate_task_output(task: MicroTask, output: str) -> ValidationResult:
+    """Validate output with generic anchor checks plus optional task-specific rules."""
+    is_valid, cleaned = validate(output, task.anchor)
+    if not is_valid:
+        return ValidationResult(
+            ok=False,
+            cleaned_output=cleaned,
+            reason=f"Output does not satisfy anchor requirements for {task.anchor.value}.",
+        )
+
+    if task.max_output_chars and len(cleaned) > task.max_output_chars:
+        return ValidationResult(
+            ok=False,
+            cleaned_output=cleaned,
+            reason=f"Output exceeds max_output_chars={task.max_output_chars}.",
+        )
+
+    deterministic = _run_validator_rule(task.validator_rule, cleaned)
+    if deterministic is not None:
+        return deterministic
+
+    python_result = _validate_python_code(task, cleaned)
+    if python_result is not None:
+        return python_result
+
+    return ValidationResult(ok=True, cleaned_output=cleaned, reason="")
+
+
+def _run_validator_rule(rule: str | None, cleaned: str) -> ValidationResult | None:
+    if not rule:
+        return None
+
+    if rule.startswith("contains:"):
+        needle = rule.split(":", 1)[1]
+        if needle not in cleaned:
+            return ValidationResult(False, cleaned, f"Expected output to contain '{needle}'.")
+        return ValidationResult(True, cleaned, "")
+
+    if rule.startswith("regex:"):
+        pattern = rule.split(":", 1)[1]
+        if not re.search(pattern, cleaned, re.DOTALL):
+            return ValidationResult(False, cleaned, f"Output does not match regex '{pattern}'.")
+        return ValidationResult(True, cleaned, "")
+
+    if rule.startswith("json_keys:"):
+        expected_keys = [item.strip() for item in rule.split(":", 1)[1].split(",") if item.strip()]
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError:
+            return ValidationResult(False, cleaned, "Output is not valid JSON for json_keys rule.")
+        if not isinstance(data, dict):
+            return ValidationResult(False, cleaned, "json_keys rule requires a JSON object.")
+        missing = [key for key in expected_keys if key not in data]
+        if missing:
+            return ValidationResult(False, cleaned, f"JSON object missing keys: {missing}.")
+        return ValidationResult(True, cleaned, "")
+
+    return ValidationResult(False, cleaned, f"Unknown validator_rule '{rule}'.")
+
+
+def _validate_python_code(task: MicroTask, cleaned: str) -> ValidationResult | None:
+    if task.anchor != AnchorType.CODE:
+        return None
+
+    looks_python = any(
+        token in cleaned for token in ("def ", "class ", "import ", "from ", "@", "return ")
+    )
+    if not looks_python:
+        return None
+
+    try:
+        ast.parse(cleaned)
+    except SyntaxError as exc:
+        return ValidationResult(False, cleaned, f"Python syntax error: {exc.msg}.")
+
+    return ValidationResult(True, cleaned, "")

@@ -27,6 +27,12 @@ def _make_task(id: str, depends_on: list[str], group: int,
 def _noop(task): pass
 
 
+@pytest.fixture(autouse=True)
+def _isolated_cache_dir(tmp_path, monkeypatch):
+    from adp.engine import cache as cache_module
+    monkeypatch.setattr(cache_module, "TASK_CACHE_DIR", str(tmp_path / "cache"))
+
+
 class TestFillTemplate:
     def test_fills_placeholder(self):
         template = "Use this: {my_key} in output."
@@ -75,7 +81,7 @@ class TestExecutePlan:
 
         call_order = []
 
-        async def mock_local(system_prompt, input_text, anchor_str, model_name=None):
+        async def mock_local(system_prompt, input_text, anchor_str, model_name=None, num_predict=None):
             # Capture which task's context was injected
             if "t1_result" in system_prompt:
                 call_order.append("t2_saw_t1")
@@ -128,7 +134,7 @@ class TestExecutePlan:
         t2 = _make_task("t2", [], 0)
         plan = TaskPlan(tasks=[t1, t2], final_output_keys=[], output_filenames=[])
 
-        async def mock_local(system_prompt, input_text, anchor_str, model_name=None):
+        async def mock_local(system_prompt, input_text, anchor_str, model_name=None, num_predict=None):
             started.append(input_text)
             await asyncio.sleep(0.05)
             finished.append(input_text)
@@ -157,8 +163,55 @@ class TestExecutePlan:
             return ""  # always invalid
 
         with patch("adp.stages.executor.call_local_async", side_effect=mock_local):
-            from adp.config import MAX_RETRIES
+            from adp.config import MAX_REPAIR_ATTEMPTS, MAX_RETRIES
             await execute_plan(plan, _noop, _noop, _noop)
 
         assert t1.status == TaskStatus.FAILED
-        assert call_count == MAX_RETRIES
+        assert call_count == MAX_RETRIES + MAX_REPAIR_ATTEMPTS
+
+    @pytest.mark.asyncio
+    async def test_repair_attempt_can_recover_invalid_output(self):
+        t1 = _make_task("t1", [], 0)
+        plan = TaskPlan(tasks=[t1], final_output_keys=[], output_filenames=[])
+
+        call_count = 0
+
+        async def mock_local(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 3:
+                return ""
+            return "Output: repaired"
+
+        with patch("adp.stages.executor.call_local_async", side_effect=mock_local):
+            await execute_plan(plan, _noop, _noop, _noop)
+
+        assert t1.status == TaskStatus.DONE
+        assert t1.output == "repaired"
+
+    @pytest.mark.asyncio
+    async def test_cached_output_skips_model_call(self, tmp_path, monkeypatch):
+        from adp.engine import cache as cache_module
+        monkeypatch.setattr(cache_module, "TASK_CACHE_DIR", str(tmp_path / "cache"))
+        from adp.engine.cache import build_task_cache_key, save_cached_output
+        from adp.engine.router import resolve_model_name
+        from adp.stages.executor import fill_template
+
+        t1 = _make_task("t1", [], 0)
+        plan = TaskPlan(tasks=[t1], final_output_keys=[], output_filenames=[])
+        system_prompt = fill_template(t1.system_prompt_template, {})
+        cache_key = build_task_cache_key(
+            t1,
+            model_name=resolve_model_name(t1),
+            system_prompt=system_prompt,
+            input_text=t1.input_text,
+        )
+        save_cached_output(cache_key, "cached-result")
+
+        async def mock_local(*args, **kwargs):
+            raise AssertionError("Local model should not be called on cache hit")
+
+        with patch("adp.stages.executor.call_local_async", side_effect=mock_local):
+            ctx = await execute_plan(plan, _noop, _noop, _noop)
+
+        assert ctx["key_t1"] == "cached-result"

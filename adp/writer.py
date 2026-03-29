@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from adp.models.task import TaskPlan
+from adp.models.task import EvaluationSummary, TaskPlan
 
 
 def write_output_files(
@@ -34,7 +34,12 @@ def write_output_files(
 
     return written
 
-def write_execution_log(user_prompt: str, plan: TaskPlan, output_dir: str) -> None:
+def write_execution_log(
+    user_prompt: str,
+    plan: TaskPlan,
+    output_dir: str,
+    summary: EvaluationSummary | None = None,
+) -> None:
     """
     Writes a Markdown log of the execution details to the output directory.
     Includes the original prompt, final execution decisions, and micro-task summaries.
@@ -54,8 +59,30 @@ def write_execution_log(user_prompt: str, plan: TaskPlan, output_dir: str) -> No
         f"- **Write to Files:** `{plan.write_to_file}`",
         f"- **Expected Files:** `{', '.join(plan.output_filenames) if plan.output_filenames else 'None'}`",
         "",
-        "## Micro-Tasks",
     ]
+
+    if summary is not None:
+        lines.extend([
+            "## Evaluation Summary",
+            f"- **Total Tasks:** `{summary.total_tasks}`",
+            f"- **Completed:** `{summary.completed_tasks}`",
+            f"- **Failed:** `{summary.failed_tasks}`",
+            f"- **Skipped:** `{summary.skipped_tasks}`",
+            f"- **Retries:** `{summary.retries}`",
+            f"- **Success Rate:** `{summary.success_rate:.2%}`",
+            "",
+            "## Success By Task Kind",
+        ])
+        for kind, values in sorted(summary.by_kind.items()):
+            lines.append(
+                f"- **{kind}:** total={values['total']} done={values['done']} "
+                f"failed={values['failed']} skipped={values['skipped']}"
+            )
+        lines.append("")
+
+    lines.extend([
+        "## Micro-Tasks",
+    ])
     
     for task in plan.tasks:
         lines.append(f"### {task.id}: {task.description}")

@@ -10,17 +10,22 @@ load_dotenv()
 CLOUD_MODEL = os.getenv("CLOUD_MODEL", "gpt-oss:120b-cloud")     # large: decompose + assemble
 LOCAL_CODER_MODEL = os.getenv("LOCAL_CODER_MODEL", "qwen2.5-coder:1.5b")  # small: logic/coding tasks
 LOCAL_GENERAL_MODEL = os.getenv("LOCAL_GENERAL_MODEL", "qwen2.5:1.5b")    # small: text/extraction tasks
+LOCAL_CRITIC_MODEL = os.getenv("LOCAL_CRITIC_MODEL", LOCAL_GENERAL_MODEL)
+LOCAL_REPAIR_MODEL = os.getenv("LOCAL_REPAIR_MODEL", LOCAL_CODER_MODEL)
 OLLAMA_BASE_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
 # ---------------------------------------------------------------------------
 # Execution
 # ---------------------------------------------------------------------------
 MAX_RETRIES = 3
+MAX_REPAIR_ATTEMPTS = 2
 LOCAL_TEMPERATURE = 0.0     # always 0.0 for local — determinism is mandatory
 CLOUD_TEMPERATURE = 0.2     # slight creativity for decomposition only
 LOCAL_TIMEOUT = 120         # seconds per local model call
 CLOUD_TIMEOUT = 180         # seconds per cloud model call (larger model, bigger output)
 MAX_PARALLEL = 6            # max concurrent local model calls
+MAX_TASK_PROMPT_CHARS = 12000
+DEFAULT_NUM_PREDICT = 2048
 
 # ---------------------------------------------------------------------------
 # TUI
@@ -32,3 +37,4 @@ MAX_HISTORY = 500
 # Output
 # ---------------------------------------------------------------------------
 DEFAULT_OUTPUT_DIR = "./adp_output"
+TASK_CACHE_DIR = os.getenv("TASK_CACHE_DIR", ".adp_cache")

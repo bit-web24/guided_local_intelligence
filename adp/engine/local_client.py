@@ -14,6 +14,7 @@ from adp.config import (
     LOCAL_TEMPERATURE,
     LOCAL_TIMEOUT,
     OLLAMA_BASE_URL,
+    DEFAULT_NUM_PREDICT,
 )
 
 
@@ -22,6 +23,7 @@ async def call_local_async(
     input_text: str,
     anchor_str: str,
     model_name: str,
+    num_predict: int = DEFAULT_NUM_PREDICT,
 ) -> str:
     """
     Call the small Ollama model asynchronously.
@@ -40,7 +42,7 @@ async def call_local_async(
         "stream": False,
         "options": {
             "temperature": LOCAL_TEMPERATURE,  # always 0.0 — determinism mandatory
-            "num_predict": 2048,
+            "num_predict": num_predict,
         },
     }
     async with httpx.AsyncClient(timeout=LOCAL_TIMEOUT) as client:
@@ -57,9 +59,12 @@ def call_local_sync(
     input_text: str,
     anchor_str: str,
     model_name: str,
+    num_predict: int = DEFAULT_NUM_PREDICT,
 ) -> str:
     """Synchronous wrapper. Use only in non-async contexts (e.g. tests)."""
-    return asyncio.run(call_local_async(system_prompt, input_text, anchor_str, model_name))
+    return asyncio.run(
+        call_local_async(system_prompt, input_text, anchor_str, model_name, num_predict)
+    )
 
 
 async def check_ollama_connection() -> bool:

@@ -23,6 +23,7 @@ import sys
 from typing import Callable
 
 from adp.config import DEFAULT_OUTPUT_DIR, LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL, CLOUD_MODEL
+from adp.engine.evaluation import summarize_tasks
 from adp.engine.local_client import check_ollama_connection
 from adp.models.task import PipelineResult
 from adp.stages.assembler import assemble
@@ -82,9 +83,10 @@ async def run_pipeline_async(
 
     # Stage 4 — Write or Print
     callbacks.on_stage("WRITING")
+    summary = summarize_tasks(plan.tasks)
     
     # Always write an execution log regardless of text/file mode
-    write_execution_log(user_prompt, plan, output_dir)
+    write_execution_log(user_prompt, plan, output_dir, summary=summary)
     
     if plan.write_to_file:
         written = write_output_files(files, output_dir)

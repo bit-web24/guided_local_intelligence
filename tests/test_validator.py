@@ -1,8 +1,8 @@
 """Tests for adp/engine/validator.py — anchor extraction and output validation."""
 import pytest
 
-from adp.engine.validator import extract_after_anchor, validate
-from adp.models.task import AnchorType
+from adp.engine.validator import extract_after_anchor, validate, validate_task_output
+from adp.models.task import AnchorType, MicroTask, TaskKind
 
 
 class TestExtractAfterAnchor:
@@ -108,3 +108,54 @@ class TestValidateMarkdown:
     def test_empty_fails(self):
         ok, _ = validate("", AnchorType.MARKDOWN)
         assert ok is False
+
+
+class TestValidateTaskOutput:
+    def test_validator_rule_contains(self):
+        task = MicroTask(
+            id="t1",
+            description="Write code",
+            system_prompt_template="EXAMPLES:\nInput: x\nCode: y\n---\nInput: {input_text}\nCode:",
+            input_text="run",
+            output_key="code",
+            depends_on=[],
+            anchor=AnchorType.CODE,
+            parallel_group=0,
+            task_kind=TaskKind.CODEGEN,
+            validator_rule="contains:def foo",
+        )
+        result = validate_task_output(task, "def foo():\n    return 1")
+        assert result.ok is True
+
+    def test_validator_rule_json_keys(self):
+        task = MicroTask(
+            id="t1",
+            description="Write json",
+            system_prompt_template="EXAMPLES:\nInput: x\nJSON: {}\n---\nInput: {input_text}\nJSON:",
+            input_text="run",
+            output_key="data",
+            depends_on=[],
+            anchor=AnchorType.JSON,
+            parallel_group=0,
+            task_kind=TaskKind.TRANSFORM,
+            validator_rule="json_keys:name,version",
+        )
+        result = validate_task_output(task, '{"name": "adp"}')
+        assert result.ok is False
+        assert "missing keys" in result.reason
+
+    def test_python_syntax_is_checked(self):
+        task = MicroTask(
+            id="t1",
+            description="Write python",
+            system_prompt_template="EXAMPLES:\nInput: x\nCode: y\n---\nInput: {input_text}\nCode:",
+            input_text="run",
+            output_key="code",
+            depends_on=[],
+            anchor=AnchorType.CODE,
+            parallel_group=0,
+            task_kind=TaskKind.CODEGEN,
+        )
+        result = validate_task_output(task, "def broken(:\n    pass")
+        assert result.ok is False
+        assert "syntax error" in result.reason.lower()

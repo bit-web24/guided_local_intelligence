@@ -1,13 +1,15 @@
 # ADP — Agentic Decomposition Pipeline
 
-A CLI tool that takes any complex prompt and produces complete, production-ready files
-by running a 3-stage pipeline entirely through **Ollama** — no external API keys required.
+A CLI tool that takes complex prompts and produces complete outputs through a local-first
+micro-task pipeline running entirely through **Ollama** — no external API keys required.
 
 ## How It Works
 
-1. **Decompose** — A large Ollama model (`gpt-oss:120b-cloud`) breaks your prompt into atomic micro-tasks with a dependency graph and few-shot examples
-2. **Execute** — A small Ollama model (`qwen2.5-coder:7b`) runs each task locally, in parallel where possible, with outputs injected into downstream task prompts
-3. **Assemble** — The large model stitches all outputs into complete, production-ready files
+1. **Decompose** — A large Ollama model breaks your prompt into atomic micro-tasks with explicit task kinds, validator hints, and dependency ordering
+2. **Validate Plan** — The plan is checked for duplicate ids, missing dependencies, unresolved placeholders, invalid final outputs, and prompt-size issues before any local execution begins
+3. **Execute** — Local models run each task with context injection, task-aware routing, deterministic validation, and bounded retries
+4. **Repair** — Invalid task outputs are repaired with a focused correction pass instead of blindly re-running the same prompt
+5. **Assemble** — The large model combines only validated fragments into the final response or files
 
 ## Setup
 
@@ -56,9 +58,6 @@ uv run adp --no-tui "Generate a pyproject.toml for a Python CLI tool"
 ## Running Tests
 
 ```bash
-# Unit tests (no Ollama required)
-uv run pytest tests/test_graph.py tests/test_validator.py tests/test_decomposer.py tests/test_executor.py -v
-
 # All tests
 uv run pytest -v
 ```
@@ -71,8 +70,11 @@ User Prompt
      ▼ (large Ollama model — once)
 Decompose → Task Plan (dependency graph, few-shot prompts)
      │
+     ▼
+Plan Validation → fail fast on bad placeholders / keys / groups
+     │
      ▼ (small Ollama model — many times, parallel)
-Execute → Context Dict (key → output per task)
+Execute → deterministic validation → targeted repair if needed
      │
      ▼ (large Ollama model — once)
 Assemble → {filename: content}
@@ -81,6 +83,12 @@ Assemble → {filename: content}
 Write → Files on disk
 ```
 
-The key mechanism is **context injection** — the output of each task is injected directly
-into the system prompt of tasks that depend on it. The small model never sees the original
-prompt — only a narrow instruction with 3–5 concrete examples.
+The key mechanisms are:
+
+- **Context injection** — each downstream task receives only the upstream outputs it depends on
+- **Task-aware routing** — extraction, codegen, summarization, and critic-style tasks can use different local models
+- **Deterministic validation** — outputs are checked by anchor type, optional validator rules, and Python syntax where applicable
+- **Repair before failure** — invalid outputs get a focused correction pass before the task is marked failed
+- **Disk cache for deterministic tasks** — repeated runs with the same filled prompt can reuse validated local outputs
+
+Execution logs now include per-run evaluation metrics such as success rate, retries, and completion counts by task kind.

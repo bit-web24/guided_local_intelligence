@@ -107,6 +107,13 @@ async def assemble(
             f"Assembler returned no parseable file blocks.\nRaw output: {raw[:500]}"
         )
 
+    missing_expected = [name for name in plan.output_filenames if name not in files]
+    if missing_expected:
+        raise AssemblyError(
+            "Assembler did not return all expected files. "
+            f"Missing: {missing_expected}"
+        )
+
     return files
 
 
@@ -134,13 +141,6 @@ def _parse_file_delimiters(raw: str, expected_filenames: list[str]) -> dict[str,
         content = re.sub(r"\n?---\s*END FILE\s*---\s*$", "", content).strip()
         if content:
             files[filename] = content
-
-    # Fallback: if nothing parsed, try stripping markdown fences and use raw
-    if not files and expected_filenames:
-        clean = re.sub(r"```\w*\n?|\n?```", "", raw).strip()
-        if clean and len(clean) > 20:
-            # Best-effort: assign to first expected filename
-            files[expected_filenames[0]] = clean
 
     return files
 
