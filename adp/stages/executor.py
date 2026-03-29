@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 from typing import Callable
 
-from adp.config import MAX_PARALLEL, MAX_RETRIES
+from adp.config import LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL, MAX_PARALLEL, MAX_RETRIES
 from adp.engine.graph import build_execution_groups
 from adp.engine.local_client import call_local_async
 from adp.engine.validator import extract_after_anchor, validate
@@ -55,6 +55,8 @@ async def execute_task(
     task.status = TaskStatus.RUNNING
     on_start(task)
 
+    model_name = LOCAL_CODER_MODEL if task.model_type == "coder" else LOCAL_GENERAL_MODEL
+
     for attempt in range(MAX_RETRIES):
         try:
             filled_prompt = fill_template(task.system_prompt_template, context)
@@ -62,6 +64,7 @@ async def execute_task(
                 system_prompt=filled_prompt,
                 input_text=task.input_text,
                 anchor_str=task.anchor.value,
+                model_name=model_name,
             )
             extracted = extract_after_anchor(raw, task.anchor)
             is_valid, cleaned = validate(extracted, task.anchor)

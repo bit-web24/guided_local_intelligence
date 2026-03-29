@@ -9,7 +9,8 @@ import asyncio
 import httpx
 
 from adp.config import (
-    LOCAL_MODEL,
+    LOCAL_CODER_MODEL,
+    LOCAL_GENERAL_MODEL,
     LOCAL_TEMPERATURE,
     LOCAL_TIMEOUT,
     OLLAMA_BASE_URL,
@@ -20,6 +21,7 @@ async def call_local_async(
     system_prompt: str,
     input_text: str,
     anchor_str: str,
+    model_name: str,
 ) -> str:
     """
     Call the small Ollama model asynchronously.
@@ -32,7 +34,7 @@ async def call_local_async(
     """
     full_prompt = f"Input: {input_text}\n{anchor_str}"
     payload = {
-        "model": LOCAL_MODEL,
+        "model": model_name,
         "system": system_prompt,
         "prompt": full_prompt,
         "stream": False,
@@ -50,21 +52,28 @@ async def call_local_async(
         return response.json()["response"]
 
 
-def call_local_sync(system_prompt: str, input_text: str, anchor_str: str) -> str:
+def call_local_sync(
+    system_prompt: str,
+    input_text: str,
+    anchor_str: str,
+    model_name: str,
+) -> str:
     """Synchronous wrapper. Use only in non-async contexts (e.g. tests)."""
-    return asyncio.run(call_local_async(system_prompt, input_text, anchor_str))
+    return asyncio.run(call_local_async(system_prompt, input_text, anchor_str, model_name))
 
 
-async def check_ollama_connection(model: str = LOCAL_MODEL) -> bool:
+async def check_ollama_connection() -> bool:
     """
-    Returns True if Ollama is reachable and the given model is available.
-    Used at startup to warn the user if the required model is not pulled.
+    Returns True if Ollama is reachable and both required local models are available.
     """
+    required_models = {LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL}
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             response = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
             data = response.json()
-            models = [m["name"] for m in data.get("models", [])]
-            return any(model in m for m in models)
+            available = {m["name"] for m in data.get("models", [])}
+            # Check if each required model name is contained within the available models list
+            # We use `any` to allow "qwen2.5-coder:1.5b" to match "qwen2.5-coder:1.5b-latest" etc.
+            return all(any(req in avail for avail in available) for req in required_models)
     except Exception:
         return False

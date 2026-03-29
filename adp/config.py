@@ -7,8 +7,9 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # Models — both served via Ollama
 # ---------------------------------------------------------------------------
-CLOUD_MODEL = os.getenv("CLOUD_MODEL", "gpt-oss:120b-cloud")   # large: decompose + assemble
-LOCAL_MODEL = os.getenv("LOCAL_MODEL", "qwen2.5-coder:7b")      # small: execute micro-tasks
+CLOUD_MODEL = os.getenv("CLOUD_MODEL", "gpt-oss:120b-cloud")     # large: decompose + assemble
+LOCAL_CODER_MODEL = os.getenv("LOCAL_CODER_MODEL", "qwen2.5-coder:1.5b")  # small: logic/coding tasks
+LOCAL_GENERAL_MODEL = os.getenv("LOCAL_GENERAL_MODEL", "qwen2.5:1.5b")    # small: text/extraction tasks
 OLLAMA_BASE_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
 # ---------------------------------------------------------------------------

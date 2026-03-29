@@ -39,13 +39,34 @@ Fragments (key → content):
 {fragments_text}
 """
 
+# ---------------------------------------------------------------------------
+# Text-only assembly system prompt — used when write_to_file is False
+# ---------------------------------------------------------------------------
+TEXT_ASSEMBLER_SYSTEM_PROMPT = """\
+You are an expert AI assistant. You receive named fragments derived from a multi-step reasoning
+pipeline. Use these fragments to synthesize a single, coherent, comprehensive answer to the user's
+original request.
+
+RULES:
+1. Provide ONLY your final response. No preamble, no meta-commentary.
+2. Format your response cleanly using Markdown.
+3. Integrate the facts, code, and insights from the fragments naturally.
+4. Do NOT output file delimiters like `--- FILE: ... ---`. Just answer the user's request.
+
+Fragments (key → content):
+{fragments_text}
+"""
 
 class AssemblyError(Exception):
     """Raised when the large model returns malformed assembly output."""
     pass
 
 
-async def assemble(plan: TaskPlan, context: ContextDict) -> dict[str, str]:
+async def assemble(
+    plan: TaskPlan,
+    context: ContextDict,
+    user_prompt: str = ""
+) -> dict[str, str]:
     """
     Collect all final_output_keys from context, send to large model,
     parse the returned file-delimited output into a {filename: content} dict.
@@ -62,14 +83,22 @@ async def assemble(plan: TaskPlan, context: ContextDict) -> dict[str, str]:
         lines.append("")
     fragments_text = "\n".join(lines)
 
-    prompt = ASSEMBLER_SYSTEM_PROMPT.replace("{fragments_text}", fragments_text)
+    if plan.write_to_file:
+        sys_prompt = ASSEMBLER_SYSTEM_PROMPT.replace("{fragments_text}", fragments_text)
+    else:
+        # Include original user prompt context for the text assembler
+        sys_prompt = TEXT_ASSEMBLER_SYSTEM_PROMPT.replace("{fragments_text}", fragments_text)
+        sys_prompt += f"\n\nUser Request: {user_prompt}"
 
     raw = await call_cloud_async(
         system_prompt="",
-        user_message=prompt,
+        user_message=sys_prompt,
         temperature=0.0,
         max_tokens=16384,
     )
+
+    if not plan.write_to_file:
+        return {"__stdout__": raw}
 
     files = _parse_file_delimiters(raw, plan.output_filenames)
 
@@ -116,7 +145,7 @@ def _parse_file_delimiters(raw: str, expected_filenames: list[str]) -> dict[str,
     return files
 
 
-def assemble_sync(plan: TaskPlan, context: ContextDict) -> dict[str, str]:
+def assemble_sync(plan: TaskPlan, context: ContextDict, user_prompt: str = "") -> dict[str, str]:
     """Synchronous wrapper — use only outside an event loop (e.g. scripts/tests)."""
     import asyncio
-    return asyncio.run(assemble(plan, context))
+    return asyncio.run(assemble(plan, context, user_prompt))

@@ -75,7 +75,7 @@ class TestExecutePlan:
 
         call_order = []
 
-        async def mock_local(system_prompt, input_text, anchor_str):
+        async def mock_local(system_prompt, input_text, anchor_str, model_name=None):
             # Capture which task's context was injected
             if "t1_result" in system_prompt:
                 call_order.append("t2_saw_t1")
@@ -128,7 +128,7 @@ class TestExecutePlan:
         t2 = _make_task("t2", [], 0)
         plan = TaskPlan(tasks=[t1, t2], final_output_keys=[], output_filenames=[])
 
-        async def mock_local(system_prompt, input_text, anchor_str):
+        async def mock_local(system_prompt, input_text, anchor_str, model_name=None):
             started.append(input_text)
             await asyncio.sleep(0.05)
             finished.append(input_text)

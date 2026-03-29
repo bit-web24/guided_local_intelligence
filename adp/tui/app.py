@@ -76,7 +76,7 @@ class TUICallbacks:
     on_task_start: Callable[[MicroTask], None]
     on_task_done: Callable[[MicroTask], None]
     on_task_failed: Callable[[MicroTask], None]
-    on_complete: Callable[[list[tuple[str, int]], str], None]
+    on_complete: Callable[[list[tuple[str, int]], str, str | None], None]
     on_error: Callable[[str], None]
 
 
@@ -105,11 +105,12 @@ def make_tui_callbacks() -> TUICallbacks:
         with _state_lock:
             _render_state["tasks"] = list(_render_state["tasks"])
 
-    def on_complete(written: list[tuple[str, int]], output_dir: str) -> None:
+    def on_complete(written: list[tuple[str, int]], output_dir: str, stdout_text: str | None = None) -> None:
         _update_state(
             stage="DONE",
             written_files=written,
             output_dir=output_dir,
+            stdout_text=stdout_text,
         )
 
     def on_error(message: str) -> None:
@@ -144,10 +145,15 @@ def make_plain_callbacks() -> TUICallbacks:
         icon = "✗" if task.status == TaskStatus.FAILED else "–"
         console.print(f"  [red]{icon} {task.id}[/] {task.error or 'failed'}")
 
-    def on_complete(written: list[tuple[str, int]], output_dir: str) -> None:
-        console.print(f"\n[bold green]Done![/] Files written to [cyan]{output_dir}[/]")
-        for fname, size in written:
-            console.print(f"  [green]✓[/] {fname} ({size:,} bytes)")
+    def on_complete(written: list[tuple[str, int]], output_dir: str, stdout_text: str | None = None) -> None:
+        console.print("\n[bold green]Done![/]")
+        if stdout_text:
+            from rich.markdown import Markdown
+            console.print(Markdown(stdout_text))
+        else:
+            console.print(f"Files written to [cyan]{output_dir}[/]")
+            for fname, size in written:
+                console.print(f"  [green]✓[/] {fname} ({size:,} bytes)")
 
     def on_error(message: str) -> None:
         console.print(f"[bold red]Error:[/] {message}")
@@ -192,9 +198,11 @@ def _build_layout(state: dict) -> Layout:
             state["streamed_output"],
         )
     )
-    layout["files"].update(
-        panels.render_output_files(state["output_filenames"])
-    )
+    if state["output_filenames"]:
+        layout["files"].update(panels.render_output_files(state["output_filenames"]))
+    else:
+        layout["files"].visible = False
+
     layout["footer"].update(panels.render_footer())
 
     return layout
@@ -255,7 +263,9 @@ def run_with_live(
 
     # Print completion summary outside Live context (non-live rich.print)
     state = _read_state()
-    if state["written_files"]:
+    if state.get("stdout_text"):
+        console.print(panels.render_text_response(state["stdout_text"]))
+    elif state["written_files"]:
         console.print(panels.render_completion_summary(
             state["written_files"],
             state["output_dir"],

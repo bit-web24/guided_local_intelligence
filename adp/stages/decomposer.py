@@ -25,8 +25,13 @@ You are a task decomposition engine. You receive a complex user request and brea
 the smallest possible atomic micro tasks that together produce the complete deliverable.
 
 RULES:
-1. Each task must have exactly ONE output — one entity, one code block, one decision,
-   one file section.
+1. EXTREME MICRO-GRANULARITY: Each task must have exactly ONE output — one entity,
+   one code block, one decision, one file section. Break the goal down into the
+   absolute smallest possible sequential tasks. A task must NEVER be broad
+   (e.g., "Analyze everything" or "Write the whole file").
+   - For code: Ask a small model to write only 1 or 2 small functions/classes per task.
+   - For text: Do not ask a small model to synthesize too much information at once.
+   - Aim for 5 to 15 micro-tasks for any non-trivial request.
 
 2. Every task's system_prompt_template MUST contain 3 to 5 EXAMPLES of exact
    input→output pairs showing the local model precisely what to produce.
@@ -50,7 +55,7 @@ RULES:
 7. The output_key must be snake_case, descriptive, and unique across the entire plan.
 
 8. The final_output_keys array must list every output_key that the assembler needs
-   to produce the final files.
+   to produce the final files (or final text).
 
 9. For tasks with upstream dependencies, include the injected context BETWEEN the
    examples and the final input, using {placeholder} syntax matching the output_key
@@ -77,12 +82,22 @@ SCHEMA:
       "output_key": "snake_case_key",
       "depends_on": [],
       "anchor": "JSON:",
-      "parallel_group": 0
+      "parallel_group": 0,
+      "model_type": "coder"
     }
   ],
   "final_output_keys": ["key1", "key2"],
-  "output_filenames": ["main.py", "pyproject.toml"]
+  "output_filenames": ["main.py", "pyproject.toml"],
+  "write_to_file": true
 }
+
+MODEL SELECTION:
+- Set `"model_type": "coder"` for tasks writing Python, JS, SQL, HTML, JSON, TOML, etc.
+- Set `"model_type": "general"` for tasks writing prose, explanations, extracting entities, or markdown.
+
+FILE OUTPUT RULES:
+- If the user explicitly asks for files to be generated (e.g. "Create a FastAPI app"), set `"write_to_file": true` and provide `"output_filenames"`.
+- If the user is just asking a conversational question, requesting an explanation, or summarizing text without needing files, set `"write_to_file": false` AND set `"output_filenames": []`.
 
 EXAMPLE of a correct system_prompt_template for a task with NO upstream dependencies:
 
@@ -208,10 +223,12 @@ def _parse_task_plan(data: dict) -> TaskPlan:
             depends_on=t.get("depends_on", []),
             anchor=AnchorType(t["anchor"]),
             parallel_group=int(t["parallel_group"]),
+            model_type=t.get("model_type", "coder"),
         ))
 
     return TaskPlan(
         tasks=tasks,
         final_output_keys=data["final_output_keys"],
-        output_filenames=data["output_filenames"],
+        output_filenames=data.get("output_filenames", []),
+        write_to_file=data.get("write_to_file", True),
     )

@@ -11,8 +11,9 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
+from rich.markdown import Markdown
 
-from adp.config import CLOUD_MODEL, LOCAL_MODEL
+from adp.config import CLOUD_MODEL, LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL
 from adp.models.task import MicroTask, TaskStatus
 from adp.tui import themes as th
 
@@ -42,7 +43,7 @@ def render_header(stage: str, ollama_ok: bool) -> Panel:
     t.append(CLOUD_MODEL, style=th.COLOR_CLOUD)
     t.append("   ")
     t.append(f"local: ", style=th.COLOR_FOOTER)
-    t.append(LOCAL_MODEL, style=th.COLOR_LOCAL)
+    t.append(f"{LOCAL_CODER_MODEL} | {LOCAL_GENERAL_MODEL}", style=th.COLOR_LOCAL)
     t.append("   ")
     t.append(f"{conn_icon} {conn_label}", style=conn_color)
 
@@ -192,6 +193,17 @@ def render_completion_summary(
     return Panel(
         RichGroup(table, t),
         title="[bold green]Pipeline Complete[/]",
+        title_align="left",
+        border_style="green",
+        padding=(1, 2),
+    )
+
+
+def render_text_response(text: str) -> Panel:
+    """Detailed completion panel for text-only conversational output."""
+    return Panel(
+        Markdown(text),
+        title="[bold green]Response[/]",
         title_align="left",
         border_style="green",
         padding=(1, 2),

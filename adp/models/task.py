@@ -29,6 +29,7 @@ class MicroTask:
     depends_on: list[str]            # list of task ids this task depends on
     anchor: AnchorType               # token ending the prompt; signals output start
     parallel_group: int              # tasks with same group number run concurrently
+    model_type: str = field(default="coder")    # "coder" or "general"
     status: TaskStatus = field(default=TaskStatus.PENDING)
     output: str | None = field(default=None)    # populated after successful execution
     retries: int = field(default=0)             # counts retry attempts
@@ -40,6 +41,7 @@ class TaskPlan:
     tasks: list[MicroTask]
     final_output_keys: list[str]     # which context keys the assembler receives
     output_filenames: list[str]      # expected output filenames (for TUI display)
+    write_to_file: bool = True     # True = files, False = single text response
 
 
 # ContextDict: task output_key → task output value (plain string, already validated)

@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Callable
 
-from adp.config import DEFAULT_OUTPUT_DIR, LOCAL_MODEL, CLOUD_MODEL
+from adp.config import DEFAULT_OUTPUT_DIR, LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL, CLOUD_MODEL
 from adp.engine.local_client import check_ollama_connection
 from adp.models.task import PipelineResult
 from adp.stages.assembler import assemble
@@ -78,12 +78,16 @@ async def run_pipeline_async(
 
     # Stage 3 — Assemble (large model)
     callbacks.on_stage("ASSEMBLING")
-    files = await assemble(plan, context)
+    files = await assemble(plan, context, user_prompt=user_prompt)
 
-    # Stage 4 — Write
+    # Stage 4 — Write or Print
     callbacks.on_stage("WRITING")
-    written = write_output_files(files, output_dir)
-    callbacks.on_complete(written, output_dir)
+    if plan.write_to_file:
+        written = write_output_files(files, output_dir)
+        callbacks.on_complete(written, output_dir, stdout_text=None)
+    else:
+        text_output = files.get("__stdout__", "Error: No text output returned.")
+        callbacks.on_complete([], output_dir, stdout_text=text_output)
 
     return PipelineResult(files=files, context=context, tasks=plan.tasks)
 
@@ -124,7 +128,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--model", "-m",
         default=None,
         metavar="MODEL",
-        help="Override local Ollama model (overrides LOCAL_MODEL env var)",
+        help="Override local Ollama models (overrides env vars)",
     )
     parser.add_argument(
         "--no-tui",
@@ -151,7 +155,8 @@ def cli() -> None:
 
     # Apply model override if given
     if args.model:
-        os.environ["LOCAL_MODEL"] = args.model
+        os.environ["LOCAL_CODER_MODEL"] = args.model
+        os.environ["LOCAL_GENERAL_MODEL"] = args.model
 
     output_dir: str = args.output
     no_tui: bool = args.no_tui
@@ -171,7 +176,7 @@ def cli() -> None:
         ollama_ok = check_ollama()
         if not ollama_ok:
             print(
-                f"Warning: Ollama model '{LOCAL_MODEL}' not found. "
+                f"Warning: One or both local models not found. "
                 "Proceeding — calls may fail.",
                 file=sys.stderr,
             )
