@@ -1,17 +1,7 @@
-import curses
+from rich import print
 
-def show_message(stdscr):
-    stdscr.clear()
-    h, w = stdscr.getmaxyx()
-    msg = "Happy Makar Sankranti"
-    x = w // 2 - len(msg) // 2
-    y = h // 2
-    stdscr.addstr(y, x, msg)
-    stdscr.refresh()
-    stdscr.getch()
-
-def main():
-    curses.wrapper(show_message)
+def display_greeting():
+    print("[bold magenta]Happy Holi[/bold magenta]")
 
 if __name__ == "__main__":
-    main()
+    display_greeting()

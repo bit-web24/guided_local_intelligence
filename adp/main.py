@@ -29,7 +29,7 @@ from adp.stages.assembler import assemble
 from adp.stages.decomposer import decompose
 from adp.stages.executor import execute_plan
 from adp.tui.app import TUICallbacks, interactive_loop, make_plain_callbacks, run_with_live
-from adp.writer import write_output_files
+from adp.writer import write_output_files, write_execution_log
 
 VERSION = "0.1.0"
 
@@ -82,6 +82,10 @@ async def run_pipeline_async(
 
     # Stage 4 — Write or Print
     callbacks.on_stage("WRITING")
+    
+    # Always write an execution log regardless of text/file mode
+    write_execution_log(user_prompt, plan, output_dir)
+    
     if plan.write_to_file:
         written = write_output_files(files, output_dir)
         callbacks.on_complete(written, output_dir, stdout_text=None)

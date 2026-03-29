@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from adp.models.task import TaskPlan
+
 
 def write_output_files(
     files: dict[str, str],
@@ -31,3 +33,38 @@ def write_output_files(
         written.append((filename, size))
 
     return written
+
+def write_execution_log(user_prompt: str, plan: TaskPlan, output_dir: str) -> None:
+    """
+    Writes a Markdown log of the execution details to the output directory.
+    Includes the original prompt, final execution decisions, and micro-task summaries.
+    """
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    
+    log_file = out_dir / ".adp_execution_log.md"
+    
+    lines = [
+        "# ADP Execution Log",
+        "",
+        "## User Prompt",
+        f"```text\n{user_prompt}\n```",
+        "",
+        "## Output Strategy",
+        f"- **Write to Files:** `{plan.write_to_file}`",
+        f"- **Expected Files:** `{', '.join(plan.output_filenames) if plan.output_filenames else 'None'}`",
+        "",
+        "## Micro-Tasks",
+    ]
+    
+    for task in plan.tasks:
+        lines.append(f"### {task.id}: {task.description}")
+        lines.append(f"- **Model Router:** `{task.model_type}`")
+        lines.append(f"- **Output Key:** `{task.output_key}`")
+        lines.append(f"- **Anchor:** `{task.anchor.value}`")
+        if task.depends_on:
+            lines.append(f"- **Dependencies:** `{', '.join(task.depends_on)}`")
+        lines.append(f"- **Execution Group:** `{task.parallel_group}`")
+        lines.append("")
+        
+    log_file.write_text("\n".join(lines), encoding="utf-8")
