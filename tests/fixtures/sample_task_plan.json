@@ -1,0 +1,36 @@
+{
+  "tasks": [
+    {
+      "id": "t1",
+      "description": "Extract project name",
+      "system_prompt_template": "You are a project name extractor. Extract ONLY the project name from the description.\nReturn ONLY a JSON object: {\"name\": \"<name>\"}. Nothing else.\n\nEXAMPLES:\nInput: \"This is a FastAPI orders service for e-commerce\"\nJSON: {\"name\": \"orders-service\"}\n\nInput: \"A Python CLI tool for converting images\"\nJSON: {\"name\": \"image-converter\"}\n\nInput: \"REST API for managing user accounts\"\nJSON: {\"name\": \"user-accounts-api\"}\n\n---\nInput: {input_text}\nJSON:",
+      "input_text": "Agentic decomposition pipeline for running LLM tasks locally",
+      "output_key": "project_name",
+      "depends_on": [],
+      "anchor": "JSON:",
+      "parallel_group": 0
+    },
+    {
+      "id": "t2",
+      "description": "Extract project purpose",
+      "system_prompt_template": "You are a purpose extractor. Write ONE sentence describing what the project does.\nReturn ONLY the sentence as plain text. Nothing else.\n\nEXAMPLES:\nInput: \"FastAPI orders service with CRUD endpoints\"\nOutput: Provides REST API endpoints for creating, reading, updating, and deleting orders.\n\nInput: \"CLI tool for image format conversion\"\nOutput: Converts images between formats (PNG, JPEG, WebP) from the command line.\n\nInput: \"User authentication microservice\"\nOutput: Handles user registration, login, and JWT token management.\n\n---\nInput: {input_text}\nOutput:",
+      "input_text": "Agentic decomposition pipeline for running LLM tasks locally",
+      "output_key": "project_purpose",
+      "depends_on": [],
+      "anchor": "Output:",
+      "parallel_group": 0
+    },
+    {
+      "id": "t3",
+      "description": "Write README",
+      "system_prompt_template": "You are a README writer. Write a complete, well-structured README.md.\nUse the project name and purpose provided below.\nReturn ONLY the markdown content. Nothing else.\n\nEXAMPLES:\nName: my-tool  Purpose: A CLI tool for X.\nMarkdown: # my-tool\\n\\nA CLI tool for X.\\n\\n## Installation\\n\\n```bash\\npip install my-tool\\n```\n\nName: api-server  Purpose: REST API for Y.\nMarkdown: # api-server\\n\\nREST API for Y.\\n\\n## Usage\\n\\nRun with `uvicorn main:app`.\n\n---\nProject name: {project_name}\nProject purpose: {project_purpose}\n\nInput: Write the README.md\nMarkdown:",
+      "input_text": "Write the README.md for this project",
+      "output_key": "readme_content",
+      "depends_on": ["t1", "t2"],
+      "anchor": "Markdown:",
+      "parallel_group": 1
+    }
+  ],
+  "final_output_keys": ["readme_content"],
+  "output_filenames": ["README.md"]
+}

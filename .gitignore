@@ -1,3 +1,7 @@
 /target
 /reports
 progress.txt
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc

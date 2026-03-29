@@ -1,0 +1,5 @@
+{
+  "project_name": "{\"name\": \"adp\"}",
+  "project_purpose": "Decomposes complex prompts into atomic tasks executed by a local LLM.",
+  "readme_content": "# adp\n\nAgentic Decomposition Pipeline.\n\n## Usage\n\nRun `adp \"your prompt\"` to generate files.\n"
+}
