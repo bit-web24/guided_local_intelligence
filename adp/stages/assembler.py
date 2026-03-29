@@ -101,6 +101,7 @@ async def assemble(
         return {"__stdout__": raw}
 
     files = _parse_file_delimiters(raw, plan.output_filenames)
+    files = _normalize_expected_files(files, raw, plan.output_filenames)
 
     if not files:
         raise AssemblyError(
@@ -141,6 +142,31 @@ def _parse_file_delimiters(raw: str, expected_filenames: list[str]) -> dict[str,
         content = re.sub(r"\n?---\s*END FILE\s*---\s*$", "", content).strip()
         if content:
             files[filename] = content
+
+    return files
+
+
+def _normalize_expected_files(
+    files: dict[str, str],
+    raw: str,
+    expected_filenames: list[str],
+) -> dict[str, str]:
+    """Best-effort recovery when the assembler returns content under the wrong filename."""
+    if not expected_filenames:
+        return files
+
+    if len(expected_filenames) == 1:
+        expected = expected_filenames[0]
+        if expected in files:
+            return files
+
+        if len(files) == 1:
+            content = next(iter(files.values()))
+            return {expected: content}
+
+        clean = re.sub(r"```\w*\n?|\n?```", "", raw).strip()
+        if clean and len(clean) > 0 and not files:
+            return {expected: clean}
 
     return files
 
