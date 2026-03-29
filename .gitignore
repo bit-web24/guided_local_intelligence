@@ -5,3 +5,4 @@ progress.txt
 .pytest_cache/
 __pycache__/
 *.pyc
+/adp_output/
