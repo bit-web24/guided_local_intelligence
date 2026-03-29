@@ -6,3 +6,4 @@ progress.txt
 # __pycache__/
 *.pyc
 /adp_output/
+.adp_cache/
