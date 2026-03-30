@@ -28,12 +28,86 @@ from rich.columns import Columns
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
+from rich.style import Style
+from rich.text import Text
 
 from adp.models.task import MicroTask, TaskPlan, TaskStatus
 from adp.tui import panels
 from adp.tui.input_handler import get_user_prompt
 
 console = Console()
+
+# ---------------------------------------------------------------------------
+# Startup banner
+# ---------------------------------------------------------------------------
+# GLI gradient colours — cyan → blue → magenta (left → right per row)
+_BANNER_GRADIENT = [
+    (0,   255, 255),  # cyan
+    (0,   180, 255),
+    (60,  120, 255),
+    (120,  80, 255),
+    (180,  40, 220),
+    (220,  20, 180),  # magenta
+]
+
+
+def _lerp_color(t: float) -> tuple[int, int, int]:
+    """Linearly interpolate across the gradient stops for t in [0,1]."""
+    stops = _BANNER_GRADIENT
+    scaled = t * (len(stops) - 1)
+    lo = int(scaled)
+    hi = min(lo + 1, len(stops) - 1)
+    frac = scaled - lo
+    r = int(stops[lo][0] + frac * (stops[hi][0] - stops[lo][0]))
+    g = int(stops[lo][1] + frac * (stops[hi][1] - stops[lo][1]))
+    b = int(stops[lo][2] + frac * (stops[hi][2] - stops[lo][2]))
+    return r, g, b
+
+
+def print_banner() -> None:
+    """Print the GLI ASCII art banner with a cyan→magenta gradient."""
+    try:
+        import pyfiglet
+        import shutil
+        term_width = shutil.get_terminal_size().columns
+        
+        # Pick the largest font that fits cleanly into the horizontal terminal bounds
+        if term_width >= 120:
+            font_name = "larry3d"
+        elif term_width >= 90:
+            font_name = "univers"
+        elif term_width >= 75:
+            font_name = "slant"
+        else:
+            font_name = "small"
+            
+        raw = pyfiglet.figlet_format(
+            "Guided\nLocal\nIntelligence", 
+            font=font_name, 
+            width=max(term_width, 200)
+        )
+    except Exception:
+        # Fallback if pyfiglet is missing or font not found
+        raw = "  GUIDED LOCAL INTELLIGENCE\n"
+
+    lines = raw.splitlines()
+    # Trim leading/trailing blank lines
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    max_width = max(len(line) for line in lines) if lines else 1
+
+    for line in lines:
+        t = Text()
+        for i, ch in enumerate(line):
+            col_t = i / max_width
+            r, g, b = _lerp_color(col_t)
+            t.append(ch, style=Style(color=f"rgb({r},{g},{b})", bold=True))
+        console.print(t)
+    
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +358,7 @@ def interactive_loop(
     pipeline_fn_factory(user_prompt, output_dir) → callable(callbacks)
     check_ollama_fn() → bool (called once per iteration)
     """
-    console.print(f"\n[bold cyan]⬡ ADP[/] — Agentic Decomposition Pipeline")
+    print_banner()
     console.print(f"[dim]Type your prompt and press Enter. Ctrl+C to exit.[/]\n")
 
     while True:
