@@ -3,7 +3,7 @@
 progress.txt
 .venv/
 .pytest_cache/
-# __pycache__/
+__pycache__/
 *.pyc
 /adp_output/
 .adp_cache/
