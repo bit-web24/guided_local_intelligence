@@ -17,9 +17,9 @@ Options:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import os
 import sys
+from functools import partial
 from typing import Callable
 
 from adp.config import DEFAULT_OUTPUT_DIR, LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL, CLOUD_MODEL
@@ -30,6 +30,8 @@ from adp.stages.decomposer import decompose
 from adp.stages.executor import execute_plan
 from adp.tui.app import TUICallbacks, interactive_loop, make_plain_callbacks, run_with_live
 from adp.writer import write_output_files, write_execution_log
+from adp.mcp.config import load_mcp_config
+from adp.mcp.client import MCPClientManager
 
 VERSION = "0.1.0"
 
@@ -46,52 +48,74 @@ async def run_pipeline_async(
     """
     Orchestrate all 4 stages: Decompose → Execute → Assemble → Write.
 
+    MCP lifecycle:
+    - load_mcp_config() reads mcp_servers.toml (empty = MCP disabled)
+    - MCPClientManager starts all configured servers, builds ToolRegistry
+    - ToolRegistry is passed to decompose() → Decomposer sees available tools
+    - project_dir is passed so Decomposer writes correct absolute paths
+    - mcp_manager is passed to execute_plan() → per-task pre-fetch runs
+    - MCPClientManager.stop() is called on exit (via async context manager)
+
     The large model is called exactly twice:
     1. decompose()  → in stages/decomposer.py
     2. assemble()   → in stages/assembler.py
     """
-    # Stage 1 — Decompose (large model)
-    callbacks.on_stage("DECOMPOSING")
-    plan = await decompose(user_prompt)
-    callbacks.on_plan_ready(plan)
+    import pathlib
+    # Resolve the project directory so the Decomposer can generate absolute
+    # paths for MCP tool args (the filesystem server requires absolute paths).
+    project_dir = str(pathlib.Path.cwd().resolve())
+    mcp_config = load_mcp_config()
 
-    if debug:
-        print(f"\n[DEBUG] Task plan: {len(plan.tasks)} tasks")
-        for t in plan.tasks:
-            print(f"\n  [{t.id}] {t.description}")
-            print(f"  group: {t.parallel_group}  depends: {t.depends_on}")
-            print(f"  --- system prompt ---")
-            print(t.system_prompt_template)
-            print(f"  ---")
+    async with MCPClientManager() as mcp_manager:
+        # Start MCP servers and build tool registry (no-op if config empty)
+        tool_registry = await mcp_manager.start(mcp_config)
 
-    # Stage 2 — Execute (small model, parallel within groups)
-    callbacks.on_stage("EXECUTING")
-    context = await execute_plan(
-        plan,
-        on_task_start=callbacks.on_task_start,
-        on_task_done=callbacks.on_task_done,
-        on_task_failed=callbacks.on_task_failed,
-    )
+        # Stage 1 — Decompose (large model)
+        callbacks.on_stage("DECOMPOSING")
+        plan = await decompose(user_prompt, tool_registry=tool_registry, project_dir=project_dir)
+        callbacks.on_plan_ready(plan)
 
-    if debug:
-        print(f"\n[DEBUG] Context keys: {list(context.keys())}")
+        if debug:
+            print(f"\n[DEBUG] Task plan: {len(plan.tasks)} tasks")
+            for t in plan.tasks:
+                print(f"\n  [{t.id}] {t.description}")
+                print(f"  group: {t.parallel_group}  depends: {t.depends_on}")
+                if t.mcp_tools:
+                    print(f"  mcp_tools: {t.mcp_tools}  args: {t.mcp_tool_args}")
+                print(f"  --- system prompt ---")
+                print(t.system_prompt_template)
+                print(f"  ---")
 
-    # Stage 3 — Assemble (large model)
-    callbacks.on_stage("ASSEMBLING")
-    files = await assemble(plan, context, user_prompt=user_prompt)
+        # Stage 2 — Execute (small model, parallel within groups)
+        callbacks.on_stage("EXECUTING")
+        context = await execute_plan(
+            plan,
+            on_task_start=callbacks.on_task_start,
+            on_task_done=callbacks.on_task_done,
+            on_task_failed=callbacks.on_task_failed,
+            mcp_manager=mcp_manager,
+            tool_registry=tool_registry,
+        )
 
-    # Stage 4 — Write or Print
-    callbacks.on_stage("WRITING")
-    
-    # Always write an execution log regardless of text/file mode
-    write_execution_log(user_prompt, plan, output_dir)
-    
-    if plan.write_to_file:
-        written = write_output_files(files, output_dir)
-        callbacks.on_complete(written, output_dir, stdout_text=None)
-    else:
-        text_output = files.get("__stdout__", "Error: No text output returned.")
-        callbacks.on_complete([], output_dir, stdout_text=text_output)
+        if debug:
+            print(f"\n[DEBUG] Context keys: {list(context.keys())}")
+
+        # Stage 3 — Assemble (large model)
+        callbacks.on_stage("ASSEMBLING")
+        files = await assemble(plan, context, user_prompt=user_prompt)
+
+        # Stage 4 — Write or Print
+        callbacks.on_stage("WRITING")
+
+        # Always write an execution log regardless of text/file mode
+        write_execution_log(user_prompt, plan, output_dir)
+
+        if plan.write_to_file:
+            written = write_output_files(files, output_dir)
+            callbacks.on_complete(written, output_dir, stdout_text=None)
+        else:
+            text_output = files.get("__stdout__", "Error: No text output returned.")
+            callbacks.on_complete([], output_dir, stdout_text=text_output)
 
     return PipelineResult(files=files, context=context, tasks=plan.tasks)
 
@@ -102,9 +126,19 @@ def run_pipeline(
     callbacks: TUICallbacks,
     debug: bool = False,
 ) -> PipelineResult:
-    """Synchronous wrapper around the async pipeline."""
-    return asyncio.run(
-        run_pipeline_async(user_prompt, output_dir, callbacks, debug)
+    """
+    Synchronous wrapper around the async pipeline.
+
+    Uses anyio.run() (not asyncio.run()) so that anyio's cancel scope and
+    task-group machinery is fully initialised BEFORE any coroutines execute.
+    asyncio.run() causes anyio to self-initialise lazily, which breaks
+    BaseSession's create_task_group() cancel scope tracking under Python 3.14,
+    triggering 'Attempted to exit cancel scope in a different task'.
+    """
+    import anyio
+    return anyio.run(
+        partial(run_pipeline_async, user_prompt, output_dir, callbacks, debug),
+        backend="asyncio",
     )
 
 
@@ -167,7 +201,8 @@ def cli() -> None:
     debug: bool = args.debug
 
     def check_ollama() -> bool:
-        return asyncio.run(check_ollama_connection())
+        import anyio
+        return anyio.run(check_ollama_connection, backend="asyncio")
 
     def pipeline_fn_factory(user_prompt: str, out_dir: str) -> Callable:
         """Returns a callable(callbacks) that runs the full pipeline."""

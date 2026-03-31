@@ -32,3 +32,17 @@ MAX_HISTORY = 500
 # Output
 # ---------------------------------------------------------------------------
 DEFAULT_OUTPUT_DIR = "./adp_output"
+
+# ---------------------------------------------------------------------------
+# MCP (Model Context Protocol)
+# ---------------------------------------------------------------------------
+# Maximum characters of a tool result injected into a local model's context.
+# Prevents context window overflow for tools like read_file on large files.
+MCP_MAX_TOOL_RESULT_CHARS = int(os.getenv("MCP_MAX_TOOL_RESULT_CHARS", "3000"))
+
+# Path to the MCP server configuration TOML file.
+# Falls back to ~/.config/adp/mcp_servers.toml if project-local file not found.
+MCP_CONFIG_PATHS = [
+    os.path.join(os.getcwd(), "mcp_servers.toml"),
+    os.path.expanduser("~/.config/adp/mcp_servers.toml"),
+]

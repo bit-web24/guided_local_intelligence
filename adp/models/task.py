@@ -30,6 +30,11 @@ class MicroTask:
     anchor: AnchorType               # token ending the prompt; signals output start
     parallel_group: int              # tasks with same group number run concurrently
     model_type: str = field(default="coder")    # "coder" or "general"
+    # MCP integration — assigned by the Decomposer, executed by the Executor
+    # before the local model call. Results are injected as {tool_name}_result.
+    mcp_tools: list[str] = field(default_factory=list)       # tool names to call
+    mcp_tool_args: dict[str, dict] = field(default_factory=dict)  # tool → arg overrides
+    # Runtime state
     status: TaskStatus = field(default=TaskStatus.PENDING)
     output: str | None = field(default=None)    # populated after successful execution
     retries: int = field(default=0)             # counts retry attempts

@@ -16,6 +16,12 @@ from adp.engine.cloud_client import call_cloud_with_history
 from adp.models.task import AnchorType, MicroTask, TaskPlan
 from adp.config import CLOUD_TEMPERATURE
 
+# Avoid a hard dependency on the mcp sub-package at import time
+try:
+    from adp.mcp.registry import ToolRegistry
+except ImportError:
+    ToolRegistry = None  # type: ignore[assignment,misc]
+
 # ---------------------------------------------------------------------------
 # Hardcoded decomposition system prompt — never configurable.
 # Changing this prompt changes pipeline behaviour for every user.
@@ -145,21 +151,74 @@ Input: Write the POST endpoint for this resource.
 Code:"
 """
 
+# ---------------------------------------------------------------------------
+# MCP tool-assignment block — appended to the Decomposer prompt when tools exist
+# ---------------------------------------------------------------------------
+_MCP_TOOL_BLOCK_TEMPLATE = """\
+
+AVAILABLE MCP TOOLS:
+{tool_summary}
+
+MCP TOOL RULES (read carefully — mistakes here cause task failures):
+
+1. CONTEXT KEY FORMAT: The tool result is written to context as:
+     {{task_id}}_{{tool_name}}_result
+   Example: task "t3" using "read_text_file" → {{t3_read_text_file_result}}
+   You MUST use this exact key in the system_prompt_template placeholder.
+   WRONG: {{read_text_file_result}}  ← shared across tasks, causes collisions
+   RIGHT: {{t3_read_text_file_result}} ← scoped to task t3 only
+
+2. ASSIGN TOOLS TO WORK TASKS, NOT TO SEPARATE READ TASKS:
+   Do NOT create a task whose only purpose is to read a file and pass it through.
+   Instead, assign the read tool directly to the task that USES the content.
+   BAD:  t2=read_pyproject, t3=analyze_pyproject (depends on t2)
+   GOOD: t2=analyze_and_fix_pyproject (assigned read_text_file, reads + fixes in one task)
+
+3. FILE PATHS MUST BE ABSOLUTE:
+   The MCP filesystem server root is: {project_dir}
+   Use absolute paths: "{project_dir}/pyproject.toml", "{project_dir}/main.py"
+   DO NOT use relative paths like "pyproject.toml" or "./main.py" — they will fail.
+
+4. LIMIT TO 1-2 TOOLS PER TASK. Only assign tools where the file content would
+   genuinely determine the model output (e.g., completing an existing file).
+   For tasks generating new content from scratch, do not assign file-read tools.
+
+JSON fields to add to the task when using MCP tools:
+  "mcp_tools": ["read_text_file"],
+  "mcp_tool_args": {{"read_text_file": {{"path": "{project_dir}/pyproject.toml"}}}}
+"""
+
 
 class DecompositionError(Exception):
     """Raised when the large model returns malformed JSON or a plan that fails validation."""
     pass
 
 
-async def decompose(user_prompt: str) -> TaskPlan:
+async def decompose(user_prompt: str, tool_registry=None, project_dir: str = "") -> TaskPlan:
     """
     Send the user prompt to the large Ollama model and parse the returned
     JSON task plan into a TaskPlan object.
 
+    tool_registry: if provided and non-empty, the tool list is injected into
+    the system prompt so the Decomposer can assign MCP tools per task.
+
+    project_dir: absolute path to the project directory. Injected into the
+    MCP tool block so the Decomposer generates correct absolute file paths
+    in mcp_tool_args instead of relative paths that fail the filesystem server.
+
     Retries up to 3 times using self-correction messages if JSON parse fails.
     """
+    # Build the effective system prompt (base + optional MCP tool block)
+    system_prompt = DECOMPOSER_SYSTEM_PROMPT
+    if tool_registry is not None and not tool_registry.is_empty():
+        tool_summary = tool_registry.tool_summary_for_decomposer()
+        system_prompt += _MCP_TOOL_BLOCK_TEMPLATE.format(
+            tool_summary=tool_summary,
+            project_dir=project_dir or "(unknown — use absolute paths)",
+        )
+
     messages = [
-        {"role": "system", "content": DECOMPOSER_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
 
@@ -224,6 +283,8 @@ def _parse_task_plan(data: dict) -> TaskPlan:
             anchor=AnchorType(t["anchor"]),
             parallel_group=int(t["parallel_group"]),
             model_type=t.get("model_type", "coder"),
+            mcp_tools=t.get("mcp_tools", []),
+            mcp_tool_args=t.get("mcp_tool_args", {}),
         ))
 
     return TaskPlan(

@@ -8,17 +8,32 @@ Context injection is the entire mechanism:
     fill_template(task.system_prompt_template, context)
 replaces every {placeholder} with the string value from context dict.
 The local model never sees the original user prompt.
+
+MCP integration (when enabled):
+    MCP tool calls happen in execute_plan() — in the MAIN pipeline task —
+    BEFORE asyncio.gather() spawns child tasks for local model calls.
+    This is mandatory: anyio cancel scopes (used internally by stdio_client)
+    must be entered and exited in the same asyncio Task. Calling call_tool()
+    from inside asyncio.gather() child tasks crosses task boundaries and
+    triggers "Attempted to exit cancel scope in a different task" errors.
+
+    Flow per group:
+        1. _prefetch_mcp_for_group()  ← main task, sequential, fills context
+        2. asyncio.gather(...)         ← child tasks, local model calls only
 """
 from __future__ import annotations
 
 import asyncio
-from typing import Callable
+import logging
+from typing import Any, Callable
 
 from adp.config import LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL, MAX_PARALLEL, MAX_RETRIES
 from adp.engine.graph import build_execution_groups
 from adp.engine.local_client import call_local_async
 from adp.engine.validator import extract_after_anchor, validate
 from adp.models.task import ContextDict, MicroTask, TaskPlan, TaskStatus
+
+logger = logging.getLogger(__name__)
 
 
 def fill_template(template: str, context: ContextDict) -> str:
@@ -32,6 +47,74 @@ def fill_template(template: str, context: ContextDict) -> str:
     return result
 
 
+# ---------------------------------------------------------------------------
+# MCP pre-fetch — runs in the MAIN task, before asyncio.gather()
+# ---------------------------------------------------------------------------
+
+async def _prefetch_mcp_for_group(
+    tasks: list[MicroTask],
+    context: ContextDict,
+    mcp_manager: Any,
+    tool_registry: Any,
+) -> None:
+    """
+    For each task in the group that has mcp_tools assigned, resolve args
+    and call the MCP server.
+
+    Context key format: "{task.id}_{tool_name}_result"
+    e.g. task t2 using read_text_file → writes "t2_read_text_file_result"
+
+    Task-scoped keys are mandatory: if t2 reads pyproject.toml and t3 reads
+    main.py, both using read_text_file, they must have DIFFERENT context keys.
+    A shared tool name key (the old design) caused the second task to receive
+    the first task's file content.
+
+    The Decomposer is instructed to use "{task_id}_{tool_name}_result" placeholders
+    in system_prompt_templates, e.g. "{t2_read_text_file_result}".
+
+    MUST be called from the main pipeline task (never from inside gather).
+    anyio cancel scopes in stdio_client are task-local and raise if called
+    from a different asyncio.Task.
+    """
+    try:
+        from adp.mcp.resolver import resolve_tool_args
+    except ImportError:
+        return   # mcp sub-package not available — silently skip
+
+    for task in tasks:
+        if not task.mcp_tools:
+            continue
+        for tool_name in task.mcp_tools:
+            # Task-scoped key — unique per (task, tool) pair
+            context_key = f"{task.id}_{tool_name}_result"
+            if tool_name not in tool_registry:
+                logger.warning(
+                    f"Task '{task.id}' references unknown MCP tool '{tool_name}'. "
+                    "Skipping."
+                )
+                context[context_key] = f"[MCP tool '{tool_name}' not found]"
+                continue
+            try:
+                mcp_tool = tool_registry[tool_name]
+                args = resolve_tool_args(mcp_tool, task, context)
+                result = await mcp_manager.call_tool(tool_name, args)
+                context[context_key] = result
+                logger.debug(
+                    f"MCP pre-fetch '{tool_name}' ({task.id}) → '{context_key}' "
+                    f"({len(result)} chars)"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"MCP tool '{tool_name}' for task '{task.id}' failed: {e}. "
+                    "Injecting error notice."
+                )
+                context[context_key] = f"[MCP tool '{tool_name}' failed: {e}]"
+
+
+# ---------------------------------------------------------------------------
+# Single task executor — local model only, no MCP calls here
+# ---------------------------------------------------------------------------
+
 async def execute_task(
     task: MicroTask,
     context: ContextDict,
@@ -40,15 +123,20 @@ async def execute_task(
     on_failed: Callable[[MicroTask], None],
 ) -> None:
     """
-    Execute a single micro-task with retry logic.
+    Execute a single micro-task with retry logic (local model only).
 
-    On each attempt:
-    1. Fill placeholders in system_prompt_template with current context
-    2. Call small Ollama model
-    3. Extract content after anchor word
-    4. Validate output by anchor type
-    5. On success: write to context dict + mark DONE
-    6. On failure: increment retries, try again
+    MCP tool results must already be present in context before this is
+    called. They are injected by _prefetch_mcp_for_group() which runs in
+    the main pipeline task before asyncio.gather() starts.
+
+    Retry loop:
+        1. Fill placeholders in system_prompt_template with context
+           (includes any MCP tool results already written by prefetch)
+        2. Call small Ollama model
+        3. Extract content after anchor word
+        4. Validate output by anchor type
+        5. On success: write to context dict + mark DONE
+        6. On failure: increment retries, try again
 
     After MAX_RETRIES failures: mark FAILED (nothing written to context).
     """
@@ -86,17 +174,27 @@ async def execute_task(
     on_failed(task)
 
 
+# ---------------------------------------------------------------------------
+# Plan executor — orchestrates groups, MCP pre-fetch, and parallel execution
+# ---------------------------------------------------------------------------
+
 async def execute_plan(
     plan: TaskPlan,
     on_task_start: Callable[[MicroTask], None],
     on_task_done: Callable[[MicroTask], None],
     on_task_failed: Callable[[MicroTask], None],
+    mcp_manager: Any | None = None,
+    tool_registry: Any | None = None,
 ) -> ContextDict:
     """
     Execute all tasks in the plan in dependency order.
 
-    Groups are processed sequentially. Tasks within a group run concurrently
-    up to MAX_PARALLEL concurrent Ollama calls (semaphore-limited).
+    For each group:
+      1. _prefetch_mcp_for_group() — main task, sequential MCP calls
+      2. asyncio.gather()          — child tasks, local model calls only
+
+    This separation is mandatory: anyio cancel scopes (created internally by
+    mcp's stdio_client) are task-local and cannot be crossed by gather tasks.
 
     Tasks whose dependencies failed are marked SKIPPED without executing.
     """
@@ -121,12 +219,20 @@ async def execute_plan(
                 runnable.append(task)
 
         if runnable:
+            # Phase 1: MCP pre-fetch — MUST run in the main task
+            if mcp_manager is not None and tool_registry is not None:
+                await _prefetch_mcp_for_group(
+                    runnable, context, mcp_manager, tool_registry
+                )
+
+            # Phase 2: Local model calls — safe to parallelise with gather
             sem = asyncio.Semaphore(MAX_PARALLEL)
 
             async def run_with_sem(t: MicroTask) -> None:
                 async with sem:
                     await execute_task(
-                        t, context, on_task_start, on_task_done, on_task_failed
+                        t, context,
+                        on_task_start, on_task_done, on_task_failed,
                     )
 
             await asyncio.gather(*[run_with_sem(t) for t in runnable])
