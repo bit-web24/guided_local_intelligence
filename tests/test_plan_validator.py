@@ -183,3 +183,27 @@ def test_text_mode_requires_no_filenames():
 
     with pytest.raises(PlanValidationError, match="write_to_file=False"):
         validate_task_plan(plan)
+
+
+def test_absolute_output_filename_fails():
+    plan = TaskPlan(
+        tasks=[_make_task("t1", "answer")],
+        final_output_keys=["answer"],
+        output_filenames=["/tmp/out.txt"],
+        write_to_file=True,
+    )
+
+    with pytest.raises(PlanValidationError, match="relative paths within the output directory"):
+        validate_task_plan(plan)
+
+
+def test_parent_directory_output_filename_fails():
+    plan = TaskPlan(
+        tasks=[_make_task("t1", "answer")],
+        final_output_keys=["answer"],
+        output_filenames=["../out.txt"],
+        write_to_file=True,
+    )
+
+    with pytest.raises(PlanValidationError, match="relative paths within the output directory"):
+        validate_task_plan(plan)

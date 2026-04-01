@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from adp.engine.graph import build_execution_groups
 from adp.models.task import TaskPlan
@@ -47,6 +48,16 @@ def validate_task_plan(plan: TaskPlan) -> None:
     if duplicate_filenames:
         raise PlanValidationError(
             f"output_filenames must not contain duplicates: {duplicate_filenames}"
+        )
+
+    invalid_filenames = sorted(
+        name for name in plan.output_filenames
+        if Path(name).is_absolute() or ".." in Path(name).parts
+    )
+    if invalid_filenames:
+        raise PlanValidationError(
+            "output_filenames must be relative paths within the output directory: "
+            f"{invalid_filenames}"
         )
 
     task_map = {task.id: task for task in plan.tasks}

@@ -21,7 +21,13 @@ def write_output_files(
 
     written: list[tuple[str, int]] = []
     for filename, content in files.items():
-        path = base / filename
+        file_path = Path(filename)
+        if file_path.is_absolute() or ".." in file_path.parts:
+            raise ValueError(
+                f"Output filename '{filename}' must use relative paths within the output directory."
+            )
+
+        path = base / file_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         size = path.stat().st_size
