@@ -23,6 +23,7 @@ from functools import partial
 from typing import Callable
 
 from adp.config import DEFAULT_OUTPUT_DIR, LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL, CLOUD_MODEL
+from adp.engine.final_verifier import verify_assembly_inputs, verify_final_outputs
 from adp.engine.local_client import check_ollama_connection
 from adp.models.task import PipelineResult
 from adp.stages.assembler import assemble
@@ -102,7 +103,11 @@ async def run_pipeline_async(
 
         # Stage 3 — Assemble (large model)
         callbacks.on_stage("ASSEMBLING")
+        verify_assembly_inputs(plan, context)
         files = await assemble(plan, context, user_prompt=user_prompt)
+
+        callbacks.on_stage("VERIFYING")
+        verify_final_outputs(plan, files)
 
         # Stage 4 — Write or Print
         callbacks.on_stage("WRITING")

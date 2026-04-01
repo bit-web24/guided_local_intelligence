@@ -35,8 +35,3 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-
-[tool.uv.workspace]
-members = [
-    "adp_output",
-]

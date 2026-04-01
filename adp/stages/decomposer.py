@@ -13,6 +13,7 @@ import json
 import re
 
 from adp.engine.cloud_client import call_cloud_with_history
+from adp.engine.plan_validator import validate_task_plan
 from adp.models.task import AnchorType, MicroTask, TaskPlan
 from adp.config import CLOUD_TEMPERATURE
 
@@ -287,9 +288,11 @@ def _parse_task_plan(data: dict) -> TaskPlan:
             mcp_tool_args=t.get("mcp_tool_args", {}),
         ))
 
-    return TaskPlan(
+    plan = TaskPlan(
         tasks=tasks,
         final_output_keys=data["final_output_keys"],
         output_filenames=data.get("output_filenames", []),
         write_to_file=data.get("write_to_file", True),
     )
+    validate_task_plan(plan)
+    return plan
