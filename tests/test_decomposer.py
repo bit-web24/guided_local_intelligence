@@ -1,9 +1,14 @@
-"""Tests for adp/stages/decomposer.py — task plan parsing and retry logic."""
+"""Tests for adp/stages/decomposer.py — prompt contract, parsing, and retry logic."""
 import json
 import pytest
 from unittest.mock import AsyncMock, patch
 
-from adp.stages.decomposer import DecompositionError, _parse_task_plan, decompose
+from adp.stages.decomposer import (
+    DECOMPOSER_SYSTEM_PROMPT,
+    DecompositionError,
+    _parse_task_plan,
+    decompose,
+)
 from adp.models.task import AnchorType, TaskStatus
 
 
@@ -65,6 +70,16 @@ class TestParseTaskPlan:
         bad = {"tasks": [{"id": "t1"}], "final_output_keys": [], "output_filenames": []}
         with pytest.raises((KeyError, ValueError)):
             _parse_task_plan(bad)
+
+
+class TestDecomposerPrompt:
+    def test_prompt_requires_cloud_to_plan_for_local_coder(self):
+        assert "PLAN for a small local model" in DECOMPOSER_SYSTEM_PROMPT
+        assert "Never create a single task that asks the local model to write an entire app" in (
+            DECOMPOSER_SYSTEM_PROMPT
+        )
+        assert 'GOOD: "Write GET / endpoint for app.py"' in DECOMPOSER_SYSTEM_PROMPT
+        assert 'BAD:  "Write Flask application code"' in DECOMPOSER_SYSTEM_PROMPT
 
 
 class TestDecomposeRetry:

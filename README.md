@@ -5,9 +5,9 @@ by running a 3-stage pipeline entirely through **Ollama** — no external API ke
 
 ## How It Works
 
-1. **Decompose** — A large Ollama model (`gpt-oss:120b-cloud`) breaks your prompt into atomic micro-tasks with a dependency graph and few-shot examples
-2. **Execute** — A small Ollama model (`qwen2.5-coder:7b`) runs each task locally, in parallel where possible, with outputs injected into downstream task prompts
-3. **Assemble** — The large model stitches all outputs into complete, production-ready files
+1. **Decompose** — A large Ollama model (`gpt-oss:120b-cloud`) breaks your prompt into atomic micro-tasks, file paths, and implementation contracts with a dependency graph and few-shot examples
+2. **Execute** — A small Ollama model (`qwen2.5-coder:7b`) writes the actual code locally, one tiny task at a time, with outputs injected into downstream task prompts
+3. **Assemble** — The large model stitches those local outputs into complete, production-ready files without inventing new logic
 
 ## Setup
 
@@ -83,4 +83,5 @@ Write → Files on disk
 
 The key mechanism is **context injection** — the output of each task is injected directly
 into the system prompt of tasks that depend on it. The small model never sees the original
-prompt — only a narrow instruction with 3–5 concrete examples.
+prompt — only a narrow instruction with 3–5 concrete examples and enough upstream structure
+to implement one precise code fragment at a time.

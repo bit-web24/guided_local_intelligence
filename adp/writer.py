@@ -1,9 +1,13 @@
-"""File writer — writes assembled output files to disk."""
+"""File writer — writes assembled output files and run artifacts to disk."""
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
-from adp.models.task import TaskPlan
+from adp.models.task import ContextDict, TaskPlan
+from adp.stages.executor import fill_template
 
 
 def write_output_files(
@@ -74,3 +78,76 @@ def write_execution_log(user_prompt: str, plan: TaskPlan, output_dir: str) -> No
         lines.append("")
         
     log_file.write_text("\n".join(lines), encoding="utf-8")
+
+
+def write_success_artifact(
+    user_prompt: str,
+    plan: TaskPlan,
+    context: ContextDict,
+    files: dict[str, str],
+    output_dir: str,
+) -> str:
+    """
+    Write a JSON artifact for a successful pipeline run.
+
+    The artifact includes:
+    - original user prompt
+    - plan-level metadata
+    - every task with its template and fully rendered prompt
+    - final generated files
+
+    The filename uses local date/time plus a short unique id:
+        adp_run_YYYYMMDD_HHMMSS_<id>.json
+    """
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_id = uuid4().hex[:8]
+    artifact_name = f"adp_run_{timestamp}_{unique_id}.json"
+    artifact_path = out_dir / artifact_name
+
+    tasks_payload = []
+    for task in plan.tasks:
+        tasks_payload.append(
+            {
+                "id": task.id,
+                "description": task.description,
+                "model_type": task.model_type,
+                "parallel_group": task.parallel_group,
+                "depends_on": task.depends_on,
+                "output_key": task.output_key,
+                "anchor": task.anchor.value,
+                "status": task.status.value,
+                "retries": task.retries,
+                "error": task.error,
+                "input_text": task.input_text,
+                "system_prompt_template": task.system_prompt_template,
+                "rendered_system_prompt": fill_template(task.system_prompt_template, context),
+                "output": task.output,
+                "mcp_tools": task.mcp_tools,
+                "mcp_tool_args": task.mcp_tool_args,
+            }
+        )
+
+    generated_files = {
+        filename: {
+            "content": content,
+            "bytes": len(content.encode("utf-8")),
+        }
+        for filename, content in files.items()
+    }
+
+    payload = {
+        "run_id": unique_id,
+        "created_at": datetime.now().isoformat(),
+        "user_prompt": user_prompt,
+        "write_to_file": plan.write_to_file,
+        "output_filenames": plan.output_filenames,
+        "final_output_keys": plan.final_output_keys,
+        "tasks": tasks_payload,
+        "generated_files": generated_files,
+    }
+
+    artifact_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return str(artifact_path)

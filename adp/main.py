@@ -30,7 +30,7 @@ from adp.stages.assembler import assemble
 from adp.stages.decomposer import decompose
 from adp.stages.executor import execute_plan
 from adp.tui.app import TUICallbacks, interactive_loop, make_plain_callbacks, run_with_live
-from adp.writer import write_output_files, write_execution_log
+from adp.writer import write_output_files, write_execution_log, write_success_artifact
 from adp.mcp.config import load_mcp_config
 from adp.mcp.client import MCPClientManager
 
@@ -117,9 +117,11 @@ async def run_pipeline_async(
 
         if plan.write_to_file:
             written = write_output_files(files, output_dir)
+            write_success_artifact(user_prompt, plan, context, files, output_dir)
             callbacks.on_complete(written, output_dir, stdout_text=None)
         else:
             text_output = files.get("__stdout__", "Error: No text output returned.")
+            write_success_artifact(user_prompt, plan, context, files, output_dir)
             callbacks.on_complete([], output_dir, stdout_text=text_output)
 
     return PipelineResult(files=files, context=context, tasks=plan.tasks)
