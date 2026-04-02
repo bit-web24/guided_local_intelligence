@@ -42,73 +42,81 @@ console = Console()
 # ---------------------------------------------------------------------------
 # GLI gradient colours — cyan → blue → magenta (left → right per row)
 _BANNER_GRADIENT = [
-    (0,   255, 255),  # cyan
-    (0,   180, 255),
-    (60,  120, 255),
-    (120,  80, 255),
-    (180,  40, 220),
-    (220,  20, 180),  # magenta
+    (0, 200, 255),
+    (0, 150, 255),
+    (80, 110, 255),
+    (140, 80, 255),
+    (190, 60, 220),
+    (220, 80, 180),
 ]
 
 
 def _lerp_color(t: float) -> tuple[int, int, int]:
-    """Linearly interpolate across the gradient stops for t in [0,1]."""
     stops = _BANNER_GRADIENT
     scaled = t * (len(stops) - 1)
     lo = int(scaled)
     hi = min(lo + 1, len(stops) - 1)
     frac = scaled - lo
+
     r = int(stops[lo][0] + frac * (stops[hi][0] - stops[lo][0]))
     g = int(stops[lo][1] + frac * (stops[hi][1] - stops[lo][1]))
     b = int(stops[lo][2] + frac * (stops[hi][2] - stops[lo][2]))
+
     return r, g, b
 
 
-def print_banner() -> None:
-    """Print the GLI ASCII art banner with a cyan→magenta gradient."""
+def print_banner(version: str = "v1.0.0") -> None:
     try:
         import pyfiglet
         import shutil
+
         term_width = shutil.get_terminal_size().columns
-        
-        # Pick the largest font that fits cleanly into the horizontal terminal bounds
-        if term_width >= 120:
-            font_name = "larry3d"
-        elif term_width >= 90:
-            font_name = "univers"
-        elif term_width >= 75:
-            font_name = "slant"
+
+        # Use structured multi-line instead of one long stretched line
+        if term_width >= 110:
+            font = "standard"
+        elif term_width >= 80:
+            font = "slant"
         else:
-            font_name = "small"
-            
+            font = "small"
+
         raw = pyfiglet.figlet_format(
-            "Guided\nLocal\nIntelligence", 
-            font=font_name, 
-            width=max(term_width, 200)
+            "Guided\nLocal\nIntelligence",
+            font=font,
+            width=term_width
         )
+
     except Exception:
-        # Fallback if pyfiglet is missing or font not found
-        raw = "  GUIDED LOCAL INTELLIGENCE\n"
+        raw = "Guided Local Intelligence"
 
-    lines = raw.splitlines()
-    # Trim leading/trailing blank lines
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    while lines and not lines[-1].strip():
-        lines.pop()
+    lines = [l.rstrip() for l in raw.splitlines() if l.strip()]
+    if not lines:
+        return
 
-    max_width = max(len(line) for line in lines) if lines else 1
+    max_width = max(len(l) for l in lines)
 
+    import shutil
+    term_width = shutil.get_terminal_size().columns
+    pad = max((term_width - max_width) // 2, 0)
+
+    # Render gradient text
     for line in lines:
-        t = Text()
+        t = Text(" " * pad)
+
         for i, ch in enumerate(line):
             col_t = i / max_width
             r, g, b = _lerp_color(col_t)
-            t.append(ch, style=Style(color=f"rgb({r},{g},{b})", bold=True))
-        console.print(t)
-    
-    console.print()
 
+            t.append(
+                ch,
+                style=Style(color=f"rgb({r},{g},{b})", bold=True)
+            )
+
+        console.print(t)
+
+    # Clean metadata section
+    console.print(" " * pad + f"[dim]{version} • Local-first AI system[/dim]")
+    console.print()
 
 # ---------------------------------------------------------------------------
 # Shared render state — guarded by a threading.Lock
