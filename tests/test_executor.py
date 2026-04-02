@@ -75,7 +75,7 @@ class TestExecutePlan:
 
         call_order = []
 
-        async def mock_local(system_prompt, input_text, anchor_str, model_name=None):
+        async def mock_local(system_prompt, input_text, anchor_str, model_name=None, **kwargs):
             # Capture which task's context was injected
             if "t1_result" in system_prompt:
                 call_order.append("t2_saw_t1")
@@ -128,7 +128,7 @@ class TestExecutePlan:
         t2 = _make_task("t2", [], 0)
         plan = TaskPlan(tasks=[t1, t2], final_output_keys=[], output_filenames=[])
 
-        async def mock_local(system_prompt, input_text, anchor_str, model_name=None):
+        async def mock_local(system_prompt, input_text, anchor_str, model_name=None, **kwargs):
             started.append(input_text)
             await asyncio.sleep(0.05)
             finished.append(input_text)
@@ -186,7 +186,7 @@ class TestExecutePlan:
 
         prompts = []
 
-        async def mock_local(system_prompt, input_text, anchor_str, model_name=None):
+        async def mock_local(system_prompt, input_text, anchor_str, model_name=None, **kwargs):
             prompts.append(system_prompt)
             return "Output: resumed"
 
@@ -203,3 +203,46 @@ class TestExecutePlan:
         assert "Schema: ready" in prompts[0]
         assert ctx["schema"] == "ready"
         assert ctx["answer"] == "resumed"
+
+    @pytest.mark.asyncio
+    async def test_retry_with_temperature_escalation(self):
+        """Retry attempts should use increasing temperature override."""
+        t1 = _make_task("t1", [], 0)
+        plan = TaskPlan(tasks=[t1], final_output_keys=[], output_filenames=[])
+
+        temps_used = []
+
+        async def mock_local(*args, temperature_override=None, **kwargs):
+            temps_used.append(temperature_override)
+            return ""  # always invalid → forces retries
+
+        with patch("adp.stages.executor.call_local_async", side_effect=mock_local):
+            await execute_plan(plan, _noop, _noop, _noop)
+
+        # Attempt 0: None (uses default 0.0), Attempt 1: 0.1, Attempt 2: 0.2
+        assert temps_used[0] is None
+        assert temps_used[1] == pytest.approx(0.1)
+        assert temps_used[2] == pytest.approx(0.2)
+
+    @pytest.mark.asyncio
+    async def test_retry_with_error_injection(self):
+        """On retry, failed validation reason should be injected into input text."""
+        t1 = _make_task("t1", [], 0)
+        plan = TaskPlan(tasks=[t1], final_output_keys=[], output_filenames=[])
+
+        inputs_received = []
+
+        async def mock_local(system_prompt, input_text, anchor_str, **kwargs):
+            inputs_received.append(input_text)
+            return ""  # always invalid
+
+        with patch("adp.stages.executor.call_local_async", side_effect=mock_local):
+            with patch("adp.stages.executor.RETRY_INJECT_ERROR", True):
+                await execute_plan(plan, _noop, _noop, _noop)
+
+        # First attempt: no retry annotation
+        assert "[RETRY" not in inputs_received[0]
+        # Second attempt: should contain the retry hint
+        assert "[RETRY" in inputs_received[1]
+        assert "rejected" in inputs_received[1]
+

@@ -36,6 +36,19 @@ DEFAULT_OUTPUT_DIR = "./adp_output"
 RUN_STATE_DIRNAME = ".gli_runs"
 
 # ---------------------------------------------------------------------------
+# Reflection (per-task semantic validation between EXECUTE and ASSEMBLE)
+# ---------------------------------------------------------------------------
+REFLECT_ENABLED = os.getenv("REFLECT_ENABLED", "true").lower() in ("true", "1", "yes")
+# Tasks with Code anchor + implementation verbs + >= this many deps → cloud reflection
+REFLECT_CLOUD_DEP_THRESHOLD = int(os.getenv("REFLECT_CLOUD_DEP_THRESHOLD", "2"))
+
+# ---------------------------------------------------------------------------
+# Retry strategy
+# ---------------------------------------------------------------------------
+RETRY_TEMPERATURE_STEP = float(os.getenv("RETRY_TEMPERATURE_STEP", "0.1"))
+RETRY_INJECT_ERROR = os.getenv("RETRY_INJECT_ERROR", "true").lower() in ("true", "1", "yes")
+
+# ---------------------------------------------------------------------------
 # MCP (Model Context Protocol)
 # ---------------------------------------------------------------------------
 # Maximum characters of a tool result injected into a local model's context.

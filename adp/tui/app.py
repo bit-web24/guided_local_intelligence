@@ -31,7 +31,7 @@ from rich.live import Live
 from rich.style import Style
 from rich.text import Text
 
-from adp.models.task import MicroTask, TaskPlan, TaskStatus
+from adp.models.task import MicroTask, ReflectionResult, TaskPlan, TaskStatus
 from adp.tui import panels
 from adp.tui.input_handler import get_user_prompt
 
@@ -160,6 +160,7 @@ class TUICallbacks:
     on_task_start: Callable[[MicroTask], None]
     on_task_done: Callable[[MicroTask], None]
     on_task_failed: Callable[[MicroTask], None]
+    on_task_reflected: Callable[[MicroTask, ReflectionResult], None]
     on_complete: Callable[[list[tuple[str, int]], str, str | None], None]
     on_error: Callable[[str], None]
 
@@ -203,6 +204,11 @@ def make_tui_callbacks() -> TUICallbacks:
             _render_state["tasks"] = list(_render_state["tasks"])
         append_activity(f"{task.id} failed: {task.error or 'failed'}")
 
+    def on_task_reflected(task: MicroTask, result: ReflectionResult) -> None:
+        verdict = "PASS" if result.passed else f"FAIL — {result.reason}"
+        cloud_tag = " [cloud]" if result.used_cloud else ""
+        append_activity(f"{task.id} reflected{cloud_tag}: {verdict}")
+
     def on_complete(written: list[tuple[str, int]], output_dir: str, stdout_text: str | None = None) -> None:
         _update_state(
             stage="DONE",
@@ -223,6 +229,7 @@ def make_tui_callbacks() -> TUICallbacks:
         on_task_start=on_task_start,
         on_task_done=on_task_done,
         on_task_failed=on_task_failed,
+        on_task_reflected=on_task_reflected,
         on_complete=on_complete,
         on_error=on_error,
     )
@@ -249,6 +256,12 @@ def make_plain_callbacks() -> TUICallbacks:
         icon = "✗" if task.status == TaskStatus.FAILED else "–"
         console.print(f"  [red]{icon} {task.id}[/] {task.error or 'failed'}")
 
+    def on_task_reflected(task: MicroTask, result: ReflectionResult) -> None:
+        if result.passed:
+            console.print(f"  [green]◉ {task.id}[/] reflected: PASS")
+        else:
+            console.print(f"  [red]◉ {task.id}[/] reflected: FAIL — {result.reason}")
+
     def on_complete(written: list[tuple[str, int]], output_dir: str, stdout_text: str | None = None) -> None:
         console.print("\n[bold green]Done![/]")
         if stdout_text:
@@ -269,6 +282,7 @@ def make_plain_callbacks() -> TUICallbacks:
         on_task_start=on_task_start,
         on_task_done=on_task_done,
         on_task_failed=on_task_failed,
+        on_task_reflected=on_task_reflected,
         on_complete=on_complete,
         on_error=on_error,
     )

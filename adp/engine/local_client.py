@@ -22,6 +22,7 @@ async def call_local_async(
     input_text: str,
     anchor_str: str,
     model_name: str,
+    temperature_override: float | None = None,
 ) -> str:
     """
     Call the small Ollama model asynchronously.
@@ -30,8 +31,13 @@ async def call_local_async(
     The system prompt is passed as the 'system' field (already filled with
     upstream context before this function is called).
 
+    temperature_override: if set, overrides LOCAL_TEMPERATURE for this call.
+    Used by the retry strategy to bump temperature on retries (0.0 → 0.1 → 0.2).
+    Default behaviour (None) uses LOCAL_TEMPERATURE (0.0).
+
     Returns the raw model output string (may include preamble before anchor).
     """
+    effective_temp = temperature_override if temperature_override is not None else LOCAL_TEMPERATURE
     full_prompt = f"Input: {input_text}\n{anchor_str}"
     payload = {
         "model": model_name,
@@ -39,7 +45,7 @@ async def call_local_async(
         "prompt": full_prompt,
         "stream": False,
         "options": {
-            "temperature": LOCAL_TEMPERATURE,  # always 0.0 — determinism mandatory
+            "temperature": effective_temp,
             "num_predict": 2048,
         },
     }

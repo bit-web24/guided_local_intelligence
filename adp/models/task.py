@@ -58,3 +58,13 @@ class PipelineResult:
     files: dict[str, str]            # filename → complete file content
     context: ContextDict             # full context dict for debugging
     tasks: list[MicroTask]           # final task list with all statuses and outputs
+
+
+@dataclass
+class ReflectionResult:
+    """Result of per-task semantic reflection (PASS or FAIL with reason)."""
+    task_id: str
+    passed: bool
+    reason: str                      # "PASS" or explanation of failure
+    used_cloud: bool = False         # True if cloud model was used for this reflection
+

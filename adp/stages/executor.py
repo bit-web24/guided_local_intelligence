@@ -27,7 +27,10 @@ import asyncio
 import logging
 from typing import Any, Callable
 
-from adp.config import LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL, MAX_PARALLEL, MAX_RETRIES
+from adp.config import (
+    LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL, MAX_PARALLEL, MAX_RETRIES,
+    RETRY_INJECT_ERROR, RETRY_TEMPERATURE_STEP,
+)
 from adp.engine.graph import build_execution_groups
 from adp.engine.local_client import call_local_async
 from adp.engine.validator import extract_after_anchor, validate
@@ -129,14 +132,15 @@ async def execute_task(
     called. They are injected by _prefetch_mcp_for_group() which runs in
     the main pipeline task before asyncio.gather() starts.
 
-    Retry loop:
-        1. Fill placeholders in system_prompt_template with context
-           (includes any MCP tool results already written by prefetch)
-        2. Call small Ollama model
-        3. Extract content after anchor word
-        4. Validate output by anchor type
-        5. On success: write to context dict + mark DONE
-        6. On failure: increment retries, try again
+    Retry strategy:
+        - Attempt 0: temperature 0.0 (deterministic, standard behaviour)
+        - Attempt N: temperature N * RETRY_TEMPERATURE_STEP (e.g. 0.1, 0.2)
+          This breaks out of deterministic failure loops where the same prompt
+          produces the same bad output.
+        - On retry, if RETRY_INJECT_ERROR is True, the validation failure
+          reason is appended to the input text so the model gets concrete
+          feedback about what went wrong. The system_prompt_template is
+          NEVER modified (immutable after decomposition).
 
     After MAX_RETRIES failures: mark FAILED (nothing written to context).
     """
@@ -144,15 +148,32 @@ async def execute_task(
     on_start(task)
 
     model_name = LOCAL_CODER_MODEL if task.model_type == "coder" else LOCAL_GENERAL_MODEL
+    last_validation_error: str | None = None
 
     for attempt in range(MAX_RETRIES):
         try:
             filled_prompt = fill_template(task.system_prompt_template, context)
+
+            # Build input text — optionally inject previous failure reason
+            effective_input = task.input_text
+            if attempt > 0 and RETRY_INJECT_ERROR and last_validation_error:
+                effective_input = (
+                    f"{task.input_text}\n\n"
+                    f"[RETRY — your previous output was rejected: "
+                    f"{last_validation_error}. Fix the issue.]"
+                )
+
+            # Temperature escalation: 0.0 on first attempt, then step up
+            temp_override: float | None = None
+            if attempt > 0:
+                temp_override = attempt * RETRY_TEMPERATURE_STEP
+
             raw = await call_local_async(
                 system_prompt=filled_prompt,
-                input_text=task.input_text,
+                input_text=effective_input,
                 anchor_str=task.anchor.value,
                 model_name=model_name,
+                temperature_override=temp_override,
             )
             extracted = extract_after_anchor(raw, task.anchor)
             is_valid, cleaned = validate(extracted, task.anchor)
@@ -163,10 +184,13 @@ async def execute_task(
                 task.status = TaskStatus.DONE
                 on_done(task)
                 return
+            # Record why validation failed for the next retry's error injection
+            last_validation_error = f"format validation failed for {task.anchor.value} output"
             task.retries += 1
         except Exception as e:
             task.retries += 1
             task.error = str(e)
+            last_validation_error = str(e)
 
     task.status = TaskStatus.FAILED
     if not task.error:

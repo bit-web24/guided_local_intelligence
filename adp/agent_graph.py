@@ -7,7 +7,7 @@ from typing import Any, Literal, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from adp.config import MAX_REPLANS
+from adp.config import MAX_REPLANS, REFLECT_ENABLED
 from adp.engine.final_verifier import (
     OutputVerificationError,
     verify_assembly_inputs,
@@ -19,6 +19,11 @@ from adp.models.task import ContextDict, PipelineResult, TaskPlan
 from adp.stages.assembler import assemble
 from adp.stages.decomposer import decompose
 from adp.stages.executor import execute_plan
+from adp.stages.reflector import (
+    has_reflection_failures,
+    reflect_plan,
+    reflection_failure_summary,
+)
 from adp.stages.replanner import replan
 from adp.writer import write_execution_log, write_output_files, write_success_artifact
 
@@ -42,6 +47,7 @@ class AgentState(TypedDict, total=False):
     last_error: str | None
     replan_count: int
     max_replans: int
+    reflection_results: list[dict]
     result: PipelineResult | None
 
 
@@ -101,6 +107,7 @@ async def _initialize_node(state: AgentState) -> Command[Literal["plan", "execut
         "last_error": None,
         "replan_count": 0,
         "max_replans": state.get("max_replans", MAX_REPLANS),
+        "reflection_results": [],
     }
     combined = dict(state)
     combined.update(updates)
@@ -164,6 +171,8 @@ async def _execute_node(state: AgentState) -> Command[Literal["assemble", "repla
     _persist(combined)  # type: ignore[arg-type]
     try:
         verify_execution_succeeded(plan)
+        if REFLECT_ENABLED:
+            return Command(update=updates, goto="reflect")
         return Command(update=updates, goto="assemble")
     except OutputVerificationError as exc:
         if state.get("replan_count", 0) < state.get("max_replans", MAX_REPLANS):
@@ -215,6 +224,50 @@ async def _assemble_node(state: AgentState) -> AgentState:
     combined.update(updates)
     _persist(combined)  # type: ignore[arg-type]
     return updates
+
+
+async def _reflect_node(state: AgentState) -> Command[Literal["assemble", "replan", "fail"]]:
+    """Per-task semantic reflection — validate each DONE task's output.
+
+    Routes:
+        - All reflections pass → assemble
+        - Some reflections fail + replans left → replan
+        - Some reflections fail + no replans left → fail
+    """
+    callbacks = state["callbacks"]
+    callbacks.on_stage("REFLECTING")
+    plan = state["plan"]
+    context = state.get("context", {})
+    if plan is None:
+        raise ValueError("Cannot reflect without a task plan.")
+
+    results = await reflect_plan(
+        plan,
+        context,
+        on_task_reflected=callbacks.on_task_reflected,
+    )
+
+    result_dicts = [
+        {"task_id": r.task_id, "passed": r.passed, "reason": r.reason, "used_cloud": r.used_cloud}
+        for r in results
+    ]
+    updates: AgentState = {
+        "reflection_results": result_dicts,
+        "status": "reflected",
+    }
+    combined = dict(state)
+    combined.update(updates)
+    _persist(combined)  # type: ignore[arg-type]
+
+    if has_reflection_failures(results):
+        summary = reflection_failure_summary(results)
+        if state.get("replan_count", 0) < state.get("max_replans", MAX_REPLANS):
+            updates["last_error"] = summary
+            return Command(update=updates, goto="replan")
+        updates["last_error"] = summary
+        return Command(update=updates, goto="fail")
+
+    return Command(update=updates, goto="assemble")
 
 
 async def _finalize_node(state: AgentState) -> AgentState:
@@ -285,6 +338,7 @@ def build_agent_graph():
     graph.add_node("plan", _plan_node)
     graph.add_node("execute", _execute_node)
     graph.add_node("replan", _replan_node)
+    graph.add_node("reflect", _reflect_node)
     graph.add_node("assemble", _assemble_node)
     graph.add_node("finalize", _finalize_node)
     graph.add_node("fail", _fail_node)
@@ -292,6 +346,8 @@ def build_agent_graph():
     graph.add_edge(START, "initialize")
     graph.add_edge("plan", "execute")
     graph.add_edge("replan", "execute")
+    # execute → reflect or assemble is handled by Command in _execute_node
+    # reflect → assemble, replan, or fail is handled by Command in _reflect_node
     graph.add_edge("assemble", "finalize")
     graph.add_edge("finalize", END)
     graph.add_edge("fail", END)
@@ -327,6 +383,7 @@ async def run_agent_graph(
         "stdout_text": None,
         "status": "created",
         "last_error": None,
+        "reflection_results": [],
     }
     final_state = await graph.ainvoke(initial_state)
     result = final_state.get("result")
