@@ -127,6 +127,7 @@ _render_state: dict = {
     "tasks": [],
     "current_task": None,
     "streamed_output": "",
+    "activity": [],
     "stage": "IDLE",
     "written_files": [],
     "output_dir": "",
@@ -155,6 +156,7 @@ def _read_state() -> dict:
 class TUICallbacks:
     on_stage: Callable[[str], None]
     on_plan_ready: Callable[[TaskPlan], None]
+    on_decomposition_retry: Callable[[int, str], None]
     on_task_start: Callable[[MicroTask], None]
     on_task_done: Callable[[MicroTask], None]
     on_task_failed: Callable[[MicroTask], None]
@@ -164,17 +166,29 @@ class TUICallbacks:
 
 def make_tui_callbacks() -> TUICallbacks:
     """Create callbacks that update render_state (non-blocking)."""
+    def append_activity(message: str) -> None:
+        with _state_lock:
+            activity = list(_render_state.get("activity", []))
+            activity.append(message)
+            _render_state["activity"] = activity[-4:]
+
     def on_stage(stage: str) -> None:
         _update_state(stage=stage)
+        append_activity(f"Stage: {stage}")
 
     def on_plan_ready(plan: TaskPlan) -> None:
         _update_state(
             tasks=list(plan.tasks),
             output_filenames=list(plan.output_filenames),
         )
+        append_activity(f"Plan ready: {len(plan.tasks)} tasks")
+
+    def on_decomposition_retry(attempt: int, reason: str) -> None:
+        append_activity(f"Decomposition retry {attempt}/3: {reason}")
 
     def on_task_start(task: MicroTask) -> None:
         _update_state(current_task=task, streamed_output="")
+        append_activity(f"{task.id} started: {task.description}")
 
     def on_task_done(task: MicroTask) -> None:
         with _state_lock:
@@ -182,10 +196,12 @@ def make_tui_callbacks() -> TUICallbacks:
             current = _render_state.get("current_task")
             if current and current.id == task.id:
                 _render_state["streamed_output"] = task.output or ""
+        append_activity(f"{task.id} done")
 
     def on_task_failed(task: MicroTask) -> None:
         with _state_lock:
             _render_state["tasks"] = list(_render_state["tasks"])
+        append_activity(f"{task.id} failed: {task.error or 'failed'}")
 
     def on_complete(written: list[tuple[str, int]], output_dir: str, stdout_text: str | None = None) -> None:
         _update_state(
@@ -194,13 +210,16 @@ def make_tui_callbacks() -> TUICallbacks:
             output_dir=output_dir,
             stdout_text=stdout_text,
         )
+        append_activity("Pipeline complete")
 
     def on_error(message: str) -> None:
         _update_state(stage="ERROR", error=message)
+        append_activity(f"Pipeline error: {message}")
 
     return TUICallbacks(
         on_stage=on_stage,
         on_plan_ready=on_plan_ready,
+        on_decomposition_retry=on_decomposition_retry,
         on_task_start=on_task_start,
         on_task_done=on_task_done,
         on_task_failed=on_task_failed,
@@ -216,6 +235,9 @@ def make_plain_callbacks() -> TUICallbacks:
 
     def on_plan_ready(plan: TaskPlan) -> None:
         console.print(f"[cyan]Plan: {len(plan.tasks)} tasks → {plan.output_filenames}[/]")
+
+    def on_decomposition_retry(attempt: int, reason: str) -> None:
+        console.print(f"  [yellow]↺ decompose {attempt}/3[/] {reason}")
 
     def on_task_start(task: MicroTask) -> None:
         console.print(f"  [yellow]▶ {task.id}[/] {task.description}")
@@ -243,6 +265,7 @@ def make_plain_callbacks() -> TUICallbacks:
     return TUICallbacks(
         on_stage=on_stage,
         on_plan_ready=on_plan_ready,
+        on_decomposition_retry=on_decomposition_retry,
         on_task_start=on_task_start,
         on_task_done=on_task_done,
         on_task_failed=on_task_failed,
@@ -267,6 +290,10 @@ def _build_layout(state: dict) -> Layout:
         Layout(name="tasks", ratio=2),
         Layout(name="current", ratio=3),
     )
+    layout["current"].split_column(
+        Layout(name="current_task", ratio=3),
+        Layout(name="activity", ratio=2),
+    )
 
     layout["header"].update(
         panels.render_header(state["stage"], state["ollama_ok"])
@@ -274,11 +301,14 @@ def _build_layout(state: dict) -> Layout:
     layout["tasks"].update(
         panels.render_task_list(state["tasks"])
     )
-    layout["current"].update(
+    layout["current_task"].update(
         panels.render_current_task(
             state["current_task"],
             state["streamed_output"],
         )
+    )
+    layout["activity"].update(
+        panels.render_activity(state["activity"], state.get("error"))
     )
     if state["output_filenames"]:
         layout["files"].update(panels.render_output_files(state["output_filenames"]))
@@ -308,6 +338,7 @@ def run_with_live(
         tasks=[],
         current_task=None,
         streamed_output="",
+        activity=[],
         stage="IDLE",
         written_files=[],
         output_dir=output_dir,

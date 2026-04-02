@@ -5,11 +5,25 @@ import ast
 import json
 from pathlib import Path
 
-from adp.models.task import ContextDict, TaskPlan
+from adp.models.task import ContextDict, TaskPlan, TaskStatus
 
 
 class OutputVerificationError(ValueError):
     """Raised when assembled output cannot be trusted as structurally correct."""
+
+
+def verify_execution_succeeded(plan: TaskPlan) -> None:
+    """Ensure execution completed without failed or skipped tasks."""
+    blocked = [
+        f"{task.id} ({task.status.value}): {task.error or task.description}"
+        for task in plan.tasks
+        if task.status in (TaskStatus.FAILED, TaskStatus.SKIPPED)
+    ]
+    if blocked:
+        raise OutputVerificationError(
+            "Execution did not complete successfully. "
+            f"Blocked tasks: {blocked}"
+        )
 
 
 def verify_assembly_inputs(plan: TaskPlan, context: ContextDict) -> None:

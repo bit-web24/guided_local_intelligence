@@ -102,6 +102,30 @@ class TestDecomposeRetry:
             assert call_count == 2  # failed once, succeeded on retry
 
     @pytest.mark.asyncio
+    async def test_reports_retry_reason_via_callback(self):
+        """Should surface each decomposition retry reason to the caller."""
+        valid_json = json.dumps(VALID_PLAN_DATA)
+        retries: list[tuple[int, str]] = []
+        call_count = 0
+
+        async def mock_call(messages, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return "not valid json at all"
+            return valid_json
+
+        with patch("adp.stages.decomposer.call_cloud_with_history", side_effect=mock_call):
+            await decompose(
+                "test prompt",
+                on_retry=lambda attempt, reason: retries.append((attempt, reason)),
+            )
+
+        assert len(retries) == 1
+        assert retries[0][0] == 1
+        assert "Expecting value" in retries[0][1]
+
+    @pytest.mark.asyncio
     async def test_raises_after_max_retries(self):
         """Should raise DecompositionError after 3 failed attempts."""
         async def mock_call(messages, **kwargs):

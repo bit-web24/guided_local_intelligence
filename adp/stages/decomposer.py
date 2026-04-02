@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from typing import Callable
 
 from adp.engine.cloud_client import call_cloud_with_history
 from adp.engine.plan_validator import validate_task_plan
@@ -253,7 +254,12 @@ class DecompositionError(Exception):
     pass
 
 
-async def decompose(user_prompt: str, tool_registry=None, project_dir: str = "") -> TaskPlan:
+async def decompose(
+    user_prompt: str,
+    tool_registry=None,
+    project_dir: str = "",
+    on_retry: Callable[[int, str], None] | None = None,
+) -> TaskPlan:
     """
     Send the user prompt to the large Ollama model and parse the returned
     JSON task plan into a TaskPlan object.
@@ -295,6 +301,8 @@ async def decompose(user_prompt: str, tool_registry=None, project_dir: str = "")
             return _parse_task_plan(data)
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             last_error = e
+            if on_retry is not None:
+                on_retry(attempt + 1, str(e))
             # Self-correction: add the bad response + error to conversation
             messages.append({"role": "assistant", "content": raw})
             messages.append({

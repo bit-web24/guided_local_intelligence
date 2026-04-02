@@ -6,9 +6,10 @@ import pytest
 from adp.engine.final_verifier import (
     OutputVerificationError,
     verify_assembly_inputs,
+    verify_execution_succeeded,
     verify_final_outputs,
 )
-from adp.models.task import AnchorType, MicroTask, TaskPlan
+from adp.models.task import AnchorType, MicroTask, TaskPlan, TaskStatus
 
 
 def _make_plan(write_to_file: bool = True) -> TaskPlan:
@@ -35,6 +36,43 @@ def test_verify_assembly_inputs_rejects_missing_fragments():
 
     with pytest.raises(OutputVerificationError, match="Missing final fragments"):
         verify_assembly_inputs(plan, {})
+
+
+def test_verify_execution_succeeded_rejects_failed_or_skipped_tasks():
+    plan = TaskPlan(
+        tasks=[
+            MicroTask(
+                id="t1",
+                description="Task t1",
+                system_prompt_template="EXAMPLES:\nInput: x\nOutput: y\n---\nInput: {input_text}\nOutput:",
+                input_text="run",
+                output_key="app_code",
+                depends_on=[],
+                anchor=AnchorType.OUTPUT,
+                parallel_group=0,
+                status=TaskStatus.FAILED,
+                error="validation failed",
+            ),
+            MicroTask(
+                id="t2",
+                description="Task t2",
+                system_prompt_template="EXAMPLES:\nInput: x\nOutput: y\n---\nInput: {input_text}\nOutput:",
+                input_text="run",
+                output_key="readme",
+                depends_on=["t1"],
+                anchor=AnchorType.OUTPUT,
+                parallel_group=1,
+                status=TaskStatus.SKIPPED,
+                error="Skipped because dependency ['t1'] failed",
+            ),
+        ],
+        final_output_keys=["app_code", "readme"],
+        output_filenames=["app.py", "README.md"],
+        write_to_file=True,
+    )
+
+    with pytest.raises(OutputVerificationError, match="Blocked tasks"):
+        verify_execution_succeeded(plan)
 
 
 def test_verify_final_outputs_accepts_valid_python():

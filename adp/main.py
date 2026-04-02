@@ -23,7 +23,11 @@ from functools import partial
 from typing import Callable
 
 from adp.config import DEFAULT_OUTPUT_DIR, LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL, CLOUD_MODEL
-from adp.engine.final_verifier import verify_assembly_inputs, verify_final_outputs
+from adp.engine.final_verifier import (
+    verify_assembly_inputs,
+    verify_execution_succeeded,
+    verify_final_outputs,
+)
 from adp.engine.local_client import check_ollama_connection
 from adp.models.task import PipelineResult
 from adp.stages.assembler import assemble
@@ -73,7 +77,12 @@ async def run_pipeline_async(
 
         # Stage 1 — Decompose (large model)
         callbacks.on_stage("DECOMPOSING")
-        plan = await decompose(user_prompt, tool_registry=tool_registry, project_dir=project_dir)
+        plan = await decompose(
+            user_prompt,
+            tool_registry=tool_registry,
+            project_dir=project_dir,
+            on_retry=callbacks.on_decomposition_retry,
+        )
         callbacks.on_plan_ready(plan)
 
         if debug:
@@ -103,6 +112,7 @@ async def run_pipeline_async(
 
         # Stage 3 — Assemble (large model)
         callbacks.on_stage("ASSEMBLING")
+        verify_execution_succeeded(plan)
         verify_assembly_inputs(plan, context)
         files = await assemble(plan, context, user_prompt=user_prompt)
 

@@ -146,6 +146,45 @@ def render_current_task(task: MicroTask | None, streamed_output: str) -> Panel:
     )
 
 
+def render_activity(activity: list[str], error: str | None = None) -> Panel:
+    """Lower-right panel showing the newest pipeline activity first."""
+    body = Text()
+    entries = list(reversed(activity[-4:]))
+
+    if not entries and not error:
+        body.append("Waiting for activity…", style=th.COLOR_FOOTER)
+    else:
+        if entries:
+            latest = entries[0]
+            latest_style = (
+                th.COLOR_ERROR
+                if "error" in latest.lower() or "failed" in latest.lower()
+                else th.COLOR_RUNNING
+            )
+            body.append("Latest event\n", style=th.COLOR_TITLE)
+            body.append(latest, style=latest_style)
+
+        if len(entries) > 1:
+            body.append("\n\nRecent\n", style=th.COLOR_TITLE)
+            for index, entry in enumerate(entries[1:]):
+                style = (
+                    th.COLOR_ERROR
+                    if "error" in entry.lower() or "failed" in entry.lower()
+                    else th.COLOR_FOOTER
+                )
+                body.append(entry, style=style)
+                if index != len(entries[1:]) - 1:
+                    body.append("\n")
+
+    return Panel(
+        body,
+        title="ACTIVITY",
+        title_align="left",
+        border_style=th.COLOR_BORDER,
+        padding=(0, 1),
+    )
+
+
 def render_output_files(filenames: list[str]) -> Panel:
     """Footer bar listing expected output filenames."""
     t = Text()
