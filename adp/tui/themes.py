@@ -42,8 +42,8 @@ COLOR_TITLE = "bold white"
 # Panel/layout
 # ---------------------------------------------------------------------------
 PANEL_BORDER = "rounded"    # rich panel box style
-APP_TITLE = "⬡ ADP"
-APP_SUBTITLE = "Agentic Decomposition Pipeline"
+APP_TITLE = "⬡ Guided Local Intelligence"
+APP_SUBTITLE = ""
 
 # ---------------------------------------------------------------------------
 # Stage labels (shown in header)

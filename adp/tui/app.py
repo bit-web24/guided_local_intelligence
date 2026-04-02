@@ -365,10 +365,16 @@ def run_with_live(
     ) as live:
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(_run)
+            last_state = _read_state()
             while not future.done():
-                live.update(_build_layout(_read_state()))
+                state = _read_state()
+                if state != last_state:
+                    live.update(_build_layout(state))
+                    last_state = state
                 import time; time.sleep(0.1)
-            live.update(_build_layout(_read_state()))
+            state = _read_state()
+            if state != last_state:
+                live.update(_build_layout(state))
 
     # Re-raise if pipeline failed
     if result_holder["exc"]:
