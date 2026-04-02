@@ -22,19 +22,11 @@ import sys
 from functools import partial
 from typing import Callable
 
+from adp.agent_graph import run_agent_graph
 from adp.config import DEFAULT_OUTPUT_DIR, LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL, CLOUD_MODEL
-from adp.engine.final_verifier import (
-    verify_assembly_inputs,
-    verify_execution_succeeded,
-    verify_final_outputs,
-)
 from adp.engine.local_client import check_ollama_connection
 from adp.models.task import PipelineResult
-from adp.stages.assembler import assemble
-from adp.stages.decomposer import decompose
-from adp.stages.executor import execute_plan
 from adp.tui.app import TUICallbacks, interactive_loop, make_plain_callbacks, run_with_live
-from adp.writer import write_output_files, write_execution_log, write_success_artifact
 from adp.mcp.config import load_mcp_config
 from adp.mcp.client import MCPClientManager
 
@@ -49,9 +41,10 @@ async def run_pipeline_async(
     output_dir: str,
     callbacks: TUICallbacks,
     debug: bool = False,
+    resume_run_id: str | None = None,
 ) -> PipelineResult:
     """
-    Orchestrate all 4 stages: Decompose → Execute → Assemble → Write.
+    Run the LangGraph supervisor loop for the local-first agent.
 
     MCP lifecycle:
     - load_mcp_config() reads mcp_servers.toml (empty = MCP disabled)
@@ -65,76 +58,19 @@ async def run_pipeline_async(
     1. decompose()  → in stages/decomposer.py
     2. assemble()   → in stages/assembler.py
     """
-    import pathlib
-    # Resolve the project directory so the Decomposer can generate absolute
-    # paths for MCP tool args (the filesystem server requires absolute paths).
-    project_dir = str(pathlib.Path.cwd().resolve())
     mcp_config = load_mcp_config()
 
     async with MCPClientManager() as mcp_manager:
-        # Start MCP servers and build tool registry (no-op if config empty)
         tool_registry = await mcp_manager.start(mcp_config)
-
-        # Stage 1 — Decompose (large model)
-        callbacks.on_stage("DECOMPOSING")
-        plan = await decompose(
-            user_prompt,
-            tool_registry=tool_registry,
-            project_dir=project_dir,
-            on_retry=callbacks.on_decomposition_retry,
-        )
-        callbacks.on_plan_ready(plan)
-
-        if debug:
-            print(f"\n[DEBUG] Task plan: {len(plan.tasks)} tasks")
-            for t in plan.tasks:
-                print(f"\n  [{t.id}] {t.description}")
-                print(f"  group: {t.parallel_group}  depends: {t.depends_on}")
-                if t.mcp_tools:
-                    print(f"  mcp_tools: {t.mcp_tools}  args: {t.mcp_tool_args}")
-                print(f"  --- system prompt ---")
-                print(t.system_prompt_template)
-                print(f"  ---")
-
-        # Stage 2 — Execute (small model, parallel within groups)
-        callbacks.on_stage("EXECUTING")
-        context = await execute_plan(
-            plan,
-            on_task_start=callbacks.on_task_start,
-            on_task_done=callbacks.on_task_done,
-            on_task_failed=callbacks.on_task_failed,
+        return await run_agent_graph(
+            user_prompt=user_prompt,
+            output_dir=output_dir,
+            callbacks=callbacks,
+            debug=debug,
             mcp_manager=mcp_manager,
             tool_registry=tool_registry,
+            resume_run_id=resume_run_id,
         )
-
-        if debug:
-            print(f"\n[DEBUG] Context keys: {list(context.keys())}")
-
-        # Stage 3 — Assemble (large model)
-        callbacks.on_stage("ASSEMBLING")
-        verify_execution_succeeded(plan)
-        verify_assembly_inputs(plan, context)
-        files = await assemble(plan, context, user_prompt=user_prompt)
-
-        callbacks.on_stage("VERIFYING")
-        verify_final_outputs(plan, files)
-
-        # Stage 4 — Write or Print
-        callbacks.on_stage("WRITING")
-
-        # Always write an execution log regardless of text/file mode
-        write_execution_log(user_prompt, plan, output_dir)
-
-        if plan.write_to_file:
-            written = write_output_files(files, output_dir)
-            write_success_artifact(user_prompt, plan, context, files, output_dir)
-            callbacks.on_complete(written, output_dir, stdout_text=None)
-        else:
-            text_output = files.get("__stdout__", "Error: No text output returned.")
-            write_success_artifact(user_prompt, plan, context, files, output_dir)
-            callbacks.on_complete([], output_dir, stdout_text=text_output)
-
-    return PipelineResult(files=files, context=context, tasks=plan.tasks)
 
 
 def run_pipeline(
@@ -142,6 +78,7 @@ def run_pipeline(
     output_dir: str,
     callbacks: TUICallbacks,
     debug: bool = False,
+    resume_run_id: str | None = None,
 ) -> PipelineResult:
     """
     Synchronous wrapper around the async pipeline.
@@ -154,7 +91,7 @@ def run_pipeline(
     """
     import anyio
     return anyio.run(
-        partial(run_pipeline_async, user_prompt, output_dir, callbacks, debug),
+        partial(run_pipeline_async, user_prompt, output_dir, callbacks, debug, resume_run_id),
         backend="asyncio",
     )
 
@@ -196,6 +133,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print all system prompts and raw model outputs",
     )
     parser.add_argument(
+        "--resume",
+        metavar="RUN_ID",
+        help="Resume a prior run from output_dir/.gli_runs/<RUN_ID>/state.json",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"adp {VERSION}",
@@ -216,18 +158,25 @@ def cli() -> None:
     output_dir: str = args.output
     no_tui: bool = args.no_tui
     debug: bool = args.debug
+    resume_run_id: str | None = args.resume
 
     def check_ollama() -> bool:
         import anyio
         return anyio.run(check_ollama_connection, backend="asyncio")
 
-    def pipeline_fn_factory(user_prompt: str, out_dir: str) -> Callable:
+    def pipeline_fn_factory(user_prompt: str, out_dir: str, resume_id: str | None = None) -> Callable:
         """Returns a callable(callbacks) that runs the full pipeline."""
         def _run(callbacks: TUICallbacks) -> PipelineResult:
-            return run_pipeline(user_prompt, out_dir, callbacks, debug=debug)
+            return run_pipeline(
+                user_prompt,
+                out_dir,
+                callbacks,
+                debug=debug,
+                resume_run_id=resume_id,
+            )
         return _run
 
-    if args.prompt:
+    if args.prompt or resume_run_id:
         # Single-shot mode: prompt given on command line
         ollama_ok = check_ollama()
         if not ollama_ok:
@@ -236,7 +185,7 @@ def cli() -> None:
                 "Proceeding — calls may fail.",
                 file=sys.stderr,
             )
-        pipeline_fn = pipeline_fn_factory(args.prompt, output_dir)
+        pipeline_fn = pipeline_fn_factory(args.prompt or "", output_dir, resume_run_id)
         try:
             if no_tui:
                 callbacks = make_plain_callbacks()

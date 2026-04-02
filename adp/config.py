@@ -16,6 +16,7 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 # Execution
 # ---------------------------------------------------------------------------
 MAX_RETRIES = 3
+MAX_REPLANS = int(os.getenv("MAX_REPLANS", "2"))
 LOCAL_TEMPERATURE = 0.0     # always 0.0 for local — determinism is mandatory
 CLOUD_TEMPERATURE = 0.2     # slight creativity for decomposition only
 LOCAL_TIMEOUT = 120         # seconds per local model call
@@ -32,6 +33,7 @@ MAX_HISTORY = 500
 # Output
 # ---------------------------------------------------------------------------
 DEFAULT_OUTPUT_DIR = "./adp_output"
+RUN_STATE_DIRNAME = ".gli_runs"
 
 # ---------------------------------------------------------------------------
 # MCP (Model Context Protocol)

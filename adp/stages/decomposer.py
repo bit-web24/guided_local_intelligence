@@ -47,6 +47,11 @@ RULES:
    - For code: Ask a small model to write only 1 or 2 small functions/classes per task.
    - For text: Do not ask a small model to synthesize too much information at once.
    - Aim for 5 to 15 micro-tasks for any non-trivial request.
+   - One model call should answer ONE atomic question only.
+   - NEVER create a task like "extract everything" or "analyze the whole request".
+   - Prefer specialist tasks such as intent detection, single-entity extraction,
+     single-value validation, tool selection, argument building, syntax checking,
+     and targeted repair.
 
 2. Every task's system_prompt_template MUST contain 3 to 5 EXAMPLES of exact
    input→output pairs showing the local model precisely what to produce.
@@ -94,6 +99,33 @@ RULES:
 12. Prefer plans where cloud outputs are guidance artifacts and local outputs are
    the actual code artifacts. The cloud model may define structure, but the local
    coder model should generate the implementation code whenever possible.
+
+13. For user-understanding and tool-use requests, prefer specialist pipelines made
+   of tiny classification and extraction tasks.
+   GOOD specialist shape:
+   - t1: detect intent label only
+   - t2: extract one entity only (e.g. date)
+   - t3: extract one entity only (e.g. destination)
+   - t4: validate one extracted value only
+   - t5: select one tool name only
+   - t6: build exact JSON arguments only
+   BAD shape:
+   - t1: "extract intent, entities, tool, and arguments in one step"
+
+14. For code-generation requests, use the SAME specialist principle but map it to
+   coding artifacts rather than user-intent slots.
+   GOOD specialist code shape:
+   - detect project type or framework
+   - define output directory or file map
+   - define one contract or schema
+   - define one route or one file skeleton
+   - generate one code fragment
+   - verify one fragment
+   - repair one fragment if invalid
+   BAD shape:
+   - "write the backend"
+   - "write the whole router"
+   - "generate all CRUD endpoints in one task"
 
 ANCHOR SELECTION RULES:
 - Use JSON:     when the output is a JSON object or array
@@ -189,6 +221,15 @@ Store in use:
 
 Input: Write the POST endpoint for this resource.
 Code:"
+
+EXAMPLE of a good specialist decomposition for a tool-use request:
+- t1: detect intent label only
+- t2: extract date only
+- t3: extract destination city only
+- t4: validate destination city only
+- t5: choose tool name only
+- t6: build tool arguments JSON only
+- t7: write a short final answer using {tool_args}
 
 EXAMPLE of a good code decomposition shape:
 - t1: produce absolute path or filename map

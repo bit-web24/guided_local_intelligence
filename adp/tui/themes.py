@@ -50,8 +50,10 @@ APP_SUBTITLE = ""
 # ---------------------------------------------------------------------------
 STAGE_LABELS = {
     "IDLE":        "Idle",
+    "RESUMING":    "Resuming run…",
     "DECOMPOSING": "Decomposing prompt…",
     "EXECUTING":   "Executing tasks…",
+    "REPLANNING":  "Replanning run…",
     "ASSEMBLING":  "Assembling files…",
     "WRITING":     "Writing to disk…",
     "DONE":        "Complete ✓",

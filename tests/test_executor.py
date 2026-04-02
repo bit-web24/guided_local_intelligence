@@ -162,3 +162,44 @@ class TestExecutePlan:
 
         assert t1.status == TaskStatus.FAILED
         assert call_count == MAX_RETRIES
+
+    @pytest.mark.asyncio
+    async def test_resume_skips_done_tasks_and_uses_initial_context(self):
+        """Completed tasks should not rerun when resuming a partially finished plan."""
+        t1 = _make_task("t1", [], 0, output_key="schema")
+        t1.status = TaskStatus.DONE
+        t1.output = "ready"
+        t2 = MicroTask(
+            id="t2",
+            description="Task t2",
+            system_prompt_template=(
+                "EXAMPLES:\nInput: x\nOutput: y\n---\n"
+                "Schema: {schema}\nInput: {input_text}\nOutput:"
+            ),
+            input_text="use schema",
+            output_key="answer",
+            depends_on=["t1"],
+            anchor=AnchorType.OUTPUT,
+            parallel_group=1,
+        )
+        plan = TaskPlan(tasks=[t1, t2], final_output_keys=["answer"], output_filenames=[])
+
+        prompts = []
+
+        async def mock_local(system_prompt, input_text, anchor_str, model_name=None):
+            prompts.append(system_prompt)
+            return "Output: resumed"
+
+        with patch("adp.stages.executor.call_local_async", side_effect=mock_local):
+            ctx = await execute_plan(
+                plan,
+                _noop,
+                _noop,
+                _noop,
+                initial_context={"schema": "ready"},
+            )
+
+        assert len(prompts) == 1
+        assert "Schema: ready" in prompts[0]
+        assert ctx["schema"] == "ready"
+        assert ctx["answer"] == "resumed"

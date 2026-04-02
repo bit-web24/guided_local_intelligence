@@ -185,6 +185,8 @@ async def execute_plan(
     on_task_failed: Callable[[MicroTask], None],
     mcp_manager: Any | None = None,
     tool_registry: Any | None = None,
+    initial_context: ContextDict | None = None,
+    on_group_complete: Callable[[TaskPlan, ContextDict], None] | None = None,
 ) -> ContextDict:
     """
     Execute all tasks in the plan in dependency order.
@@ -198,14 +200,25 @@ async def execute_plan(
 
     Tasks whose dependencies failed are marked SKIPPED without executing.
     """
-    context: ContextDict = {}
+    context: ContextDict = dict(initial_context or {})
     groups = build_execution_groups(plan.tasks)
     failed_ids: set[str] = set()
+
+    for task in plan.tasks:
+        if task.status == TaskStatus.DONE and task.output is not None:
+            context.setdefault(task.output_key, task.output)
+        elif task.status in (TaskStatus.FAILED, TaskStatus.SKIPPED, TaskStatus.RUNNING):
+            task.status = TaskStatus.PENDING
+            task.error = None
+            task.output = None
+            task.retries = 0
 
     for group in groups:
         runnable: list[MicroTask] = []
 
         for task in group:
+            if task.status == TaskStatus.DONE:
+                continue
             # Skip tasks whose dependencies have failed
             if any(dep in failed_ids for dep in task.depends_on):
                 task.status = TaskStatus.SKIPPED
@@ -241,5 +254,8 @@ async def execute_plan(
         for task in group:
             if task.status in (TaskStatus.FAILED, TaskStatus.SKIPPED):
                 failed_ids.add(task.id)
+
+        if on_group_complete is not None:
+            on_group_complete(plan, context)
 
     return context

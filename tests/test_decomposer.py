@@ -81,6 +81,20 @@ class TestDecomposerPrompt:
         assert 'GOOD: "Write GET / endpoint for app.py"' in DECOMPOSER_SYSTEM_PROMPT
         assert 'BAD:  "Write Flask application code"' in DECOMPOSER_SYSTEM_PROMPT
 
+    def test_prompt_requires_atomic_specialist_micro_tasks(self):
+        assert "One model call should answer ONE atomic question only." in DECOMPOSER_SYSTEM_PROMPT
+        assert 'NEVER create a task like "extract everything"' in DECOMPOSER_SYSTEM_PROMPT
+        assert "detect intent label only" in DECOMPOSER_SYSTEM_PROMPT
+        assert "extract one entity only" in DECOMPOSER_SYSTEM_PROMPT
+        assert "build exact JSON arguments only" in DECOMPOSER_SYSTEM_PROMPT
+
+    def test_prompt_applies_specialist_principle_to_code_generation(self):
+        assert "For code-generation requests, use the SAME specialist principle" in (
+            DECOMPOSER_SYSTEM_PROMPT
+        )
+        assert "define one route or one file skeleton" in DECOMPOSER_SYSTEM_PROMPT
+        assert '"generate all CRUD endpoints in one task"' in DECOMPOSER_SYSTEM_PROMPT
+
 
 class TestDecomposeRetry:
     @pytest.mark.asyncio
