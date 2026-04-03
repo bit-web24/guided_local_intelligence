@@ -6,9 +6,11 @@ from unittest.mock import AsyncMock, patch
 from adp.stages.decomposer import (
     DECOMPOSER_SYSTEM_PROMPT,
     DecompositionError,
+    _MCP_TOOL_BLOCK_TEMPLATE,
     _parse_task_plan,
     decompose,
 )
+from adp.config import DECOMPOSITION_MAX_RETRIES
 from adp.models.task import AnchorType, TaskStatus
 
 
@@ -141,10 +143,28 @@ class TestDecomposeRetry:
 
     @pytest.mark.asyncio
     async def test_raises_after_max_retries(self):
-        """Should raise DecompositionError after 3 failed attempts."""
+        """Should raise DecompositionError after the configured retry limit."""
         async def mock_call(messages, **kwargs):
             return "always bad json {"
 
         with patch("adp.stages.decomposer.call_cloud_with_history", side_effect=mock_call):
-            with pytest.raises(DecompositionError, match="3 attempts"):
+            with pytest.raises(
+                DecompositionError,
+                match=rf"{DECOMPOSITION_MAX_RETRIES} attempts",
+            ):
                 await decompose("test prompt")
+
+    @pytest.mark.asyncio
+    async def test_uses_configured_decomposition_retry_count(self):
+        call_count = 0
+
+        async def mock_call(messages, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return "always bad json {"
+
+        with patch("adp.stages.decomposer.call_cloud_with_history", side_effect=mock_call):
+            with pytest.raises(DecompositionError):
+                await decompose("test prompt")
+
+        assert call_count == DECOMPOSITION_MAX_RETRIES

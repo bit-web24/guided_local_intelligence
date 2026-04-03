@@ -59,6 +59,7 @@ def set_model_config(
 # Execution
 # ---------------------------------------------------------------------------
 MAX_RETRIES = 3
+DECOMPOSITION_MAX_RETRIES = int(os.getenv("DECOMPOSITION_MAX_RETRIES", "6"))
 MAX_REPLANS = int(os.getenv("MAX_REPLANS", "2"))
 LOCAL_TEMPERATURE = 0.0     # always 0.0 for local — determinism is mandatory
 CLOUD_TEMPERATURE = 0.2     # slight creativity for decomposition only

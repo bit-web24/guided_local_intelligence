@@ -244,7 +244,7 @@ async def _reflect_node(state: AgentState) -> Command[Literal["assemble", "repla
     results = await reflect_plan(
         plan,
         context,
-        on_task_reflected=callbacks.on_task_reflected,
+        on_task_reflected=getattr(callbacks, "on_task_reflected", None),
     )
 
     result_dicts = [

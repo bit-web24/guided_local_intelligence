@@ -3,7 +3,7 @@
 Sends the user prompt to the large Ollama model with a hardcoded system prompt
 that instructs it to return a dependency-ordered JSON task plan.
 
-The large model is called here exactly once per pipeline run (with up to 3
+The large model is called here exactly once per pipeline run (with up to 6
 retries on JSON parse failure using self-correction messages).
 """
 from __future__ import annotations
@@ -14,9 +14,9 @@ import re
 from typing import Callable
 
 from adp.engine.cloud_client import call_cloud_with_history
-from adp.engine.plan_validator import validate_task_plan
+from adp.engine.plan_validator import PlanValidationError, validate_task_plan
 from adp.models.task import AnchorType, MicroTask, TaskPlan
-from adp.config import CLOUD_TEMPERATURE
+from adp.config import CLOUD_TEMPERATURE, DECOMPOSITION_MAX_RETRIES
 
 # Avoid a hard dependency on the mcp sub-package at import time
 try:
@@ -312,7 +312,8 @@ async def decompose(
     MCP tool block so the Decomposer generates correct absolute file paths
     in mcp_tool_args instead of relative paths that fail the filesystem server.
 
-    Retries up to 3 times using self-correction messages if JSON parse fails.
+    Retries up to DECOMPOSITION_MAX_RETRIES times using self-correction
+    messages if JSON parse or plan validation fails.
     """
     # Build the effective system prompt (base + optional MCP tool block)
     system_prompt = DECOMPOSER_SYSTEM_PROMPT
@@ -329,7 +330,7 @@ async def decompose(
     ]
 
     last_error: Exception | None = None
-    for attempt in range(3):
+    for attempt in range(DECOMPOSITION_MAX_RETRIES):
         raw = await call_cloud_with_history(
             messages=messages,
             temperature=CLOUD_TEMPERATURE,
@@ -355,7 +356,8 @@ async def decompose(
             })
 
     raise DecompositionError(
-        f"Decomposition failed after 3 attempts. Last error: {last_error}"
+        f"Decomposition failed after {DECOMPOSITION_MAX_RETRIES} attempts. "
+        f"Last error: {last_error}"
     )
 
 
