@@ -207,3 +207,30 @@ def test_parent_directory_output_filename_fails():
 
     with pytest.raises(PlanValidationError, match="relative paths within the output directory"):
         validate_task_plan(plan)
+
+
+def test_write_to_file_rejects_status_like_final_output_keys():
+    task = _make_task("t1", "file_created_status")
+    task.description = "Create output file in info directory"
+    plan = TaskPlan(
+        tasks=[task],
+        final_output_keys=["file_created_status"],
+        output_filenames=["info/quantization.txt"],
+        write_to_file=True,
+    )
+
+    with pytest.raises(PlanValidationError, match="file-content fragments"):
+        validate_task_plan(plan)
+
+
+def test_write_to_file_accepts_content_like_final_output_keys():
+    task = _make_task("t1", "quantization_web_summary")
+    task.description = "Write quantization summary content for info/quantization.txt"
+    plan = TaskPlan(
+        tasks=[task],
+        final_output_keys=["quantization_web_summary"],
+        output_filenames=["info/quantization.txt"],
+        write_to_file=True,
+    )
+
+    validate_task_plan(plan)

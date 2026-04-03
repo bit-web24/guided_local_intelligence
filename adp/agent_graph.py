@@ -22,7 +22,7 @@ from adp.engine.final_verifier import (
     verify_written_outputs,
 )
 from adp.engine.run_store import generate_run_id, load_run_state, save_run_state
-from adp.models.task import ContextDict, PipelineResult, TaskPlan
+from adp.models.task import ContextDict, PipelineResult, StageList, TaskPlan
 from adp.stages.assembler import assemble
 from adp.stages.decomposer import decompose
 from adp.stages.executor import execute_plan
@@ -32,6 +32,7 @@ from adp.stages.reflector import (
     reflection_failure_summary,
 )
 from adp.stages.replanner import replan
+from adp.stages.replanner import build_preserved_context
 from adp.writer import write_execution_log, write_output_files, write_success_artifact
 
 
@@ -51,6 +52,7 @@ class AgentState(TypedDict, total=False):
     written_files: list[tuple[str, int]]
     stdout_text: str | None
     status: str
+    completed_stages: StageList
     last_error: str | None
     replan_count: int
     max_replans: int
@@ -70,13 +72,51 @@ def _persist(state: AgentState, **overrides: Any) -> None:
         context=context,
         files=files,
         status=overrides.get("status", state.get("status", "running")),
+        completed_stages=overrides.get("completed_stages", state.get("completed_stages", [])),
         replan_count=overrides.get("replan_count", state.get("replan_count", 0)),
         max_replans=overrides.get("max_replans", state.get("max_replans", MAX_REPLANS)),
         last_error=overrides.get("last_error", state.get("last_error")),
     )
 
 
-async def _initialize_node(state: AgentState) -> Command[Literal["plan", "execute", "finalize"]]:
+def _append_completed_stage(state: AgentState, stage: str) -> StageList:
+    completed = list(state.get("completed_stages", []))
+    if stage not in completed:
+        completed.append(stage)
+    return completed
+
+
+def _resume_target_for_loaded_state(state: dict[str, Any]) -> Literal["plan", "execute", "reflect", "assemble", "finalize", "complete"]:
+    plan = state.get("plan")
+    context = state.get("context", {})
+    files = state.get("files", {})
+    completed = set(state.get("completed_stages", []))
+    status = state.get("status")
+
+    if status == "succeeded":
+        return "complete"
+    if plan is not None:
+        has_unfinished_tasks = any(task.status.value not in {"done", "failed", "skipped"} for task in plan.tasks)
+        missing_final_outputs = any(
+            key not in context or not str(context[key]).strip()
+            for key in plan.final_output_keys
+        )
+        if has_unfinished_tasks or missing_final_outputs:
+            return "execute"
+    if files and ("finalize" in completed or status in {"assembled", "writing", "verifying", "prompt_verify"}):
+        return "finalize"
+    if "assemble" in completed or status == "reflected":
+        return "assemble"
+    if "reflect" in completed or status == "executed":
+        return "reflect" if REFLECT_ENABLED else "assemble"
+    if "execute" in completed or status in {"planned", "replanned"}:
+        return "execute"
+    return "plan"
+
+
+async def _initialize_node(
+    state: AgentState,
+) -> Command[Literal["plan", "execute", "reflect", "assemble", "finalize", "complete"]]:
     callbacks = state["callbacks"]
     resume_run_id = state.get("resume_run_id")
     if resume_run_id:
@@ -91,15 +131,14 @@ async def _initialize_node(state: AgentState) -> Command[Literal["plan", "execut
             "context": loaded.get("context", {}),
             "files": loaded.get("files", {}),
             "status": loaded.get("status", "resumed"),
+            "completed_stages": loaded.get("completed_stages", []),
             "last_error": loaded.get("last_error"),
             "replan_count": int(loaded.get("replan_count", 0)),
             "max_replans": int(loaded.get("max_replans", state.get("max_replans", MAX_REPLANS))),
         }
         if updates.get("plan") is not None:
             callbacks.on_plan_ready(updates["plan"])
-        goto = "plan"
-        if updates.get("plan") is not None:
-            goto = "finalize" if updates.get("files") else "execute"
+        goto = _resume_target_for_loaded_state(loaded) if updates.get("plan") is not None else "plan"
         return Command(update=updates, goto=goto)
 
     run_id = generate_run_id()
@@ -111,6 +150,7 @@ async def _initialize_node(state: AgentState) -> Command[Literal["plan", "execut
         "written_files": [],
         "stdout_text": None,
         "status": "initialized",
+        "completed_stages": [],
         "last_error": None,
         "replan_count": 0,
         "max_replans": state.get("max_replans", MAX_REPLANS),
@@ -137,6 +177,7 @@ async def _plan_node(state: AgentState) -> AgentState:
         "context": {},
         "files": {},
         "status": "planned",
+        "completed_stages": _append_completed_stage(state, "plan"),
         "last_error": None,
     }
     combined = dict(state)
@@ -174,6 +215,7 @@ async def _execute_node(state: AgentState) -> Command[Literal["assemble", "repla
         "plan": plan,
         "context": context,
         "status": "executed",
+        "completed_stages": _append_completed_stage(state, "execute"),
     }
     combined = dict(state)
     combined.update(updates)
@@ -197,6 +239,7 @@ async def _replan_node(state: AgentState) -> AgentState:
     if previous_plan is None:
         raise ValueError("Cannot replan without an existing plan.")
     new_count = state.get("replan_count", 0) + 1
+    preserved_context = build_preserved_context(previous_plan, state.get("context", {}))
     plan = await replan(
         state["user_prompt"],
         previous_plan,
@@ -207,10 +250,11 @@ async def _replan_node(state: AgentState) -> AgentState:
     callbacks.on_plan_ready(plan)
     updates: AgentState = {
         "plan": plan,
-        "context": {},
+        "context": preserved_context,
         "files": {},
         "replan_count": new_count,
         "status": "replanned",
+        "completed_stages": ["plan"],
         "last_error": None,
     }
     combined = dict(state)
@@ -229,6 +273,7 @@ async def _assemble_node(state: AgentState) -> AgentState:
     verify_assembly_inputs(plan, context)
     files = await assemble(plan, context, user_prompt=state["user_prompt"])
     updates: AgentState = {"files": files, "status": "assembled"}
+    updates["completed_stages"] = _append_completed_stage(state, "assemble")
     combined = dict(state)
     combined.update(updates)
     _persist(combined)  # type: ignore[arg-type]
@@ -263,6 +308,7 @@ async def _reflect_node(state: AgentState) -> Command[Literal["assemble", "repla
     updates: AgentState = {
         "reflection_results": result_dicts,
         "status": "reflected",
+        "completed_stages": _append_completed_stage(state, "reflect"),
     }
     combined = dict(state)
     combined.update(updates)
@@ -368,6 +414,7 @@ async def _finalize_node(state: AgentState) -> Command[Literal["replan", "fail",
         "written_files": written_files,
         "stdout_text": stdout_text,
         "status": "succeeded",
+        "completed_stages": _append_completed_stage(state, "finalize"),
         "result": result,
     }
     combined = dict(state)
@@ -452,6 +499,7 @@ async def run_agent_graph(
         "written_files": [],
         "stdout_text": None,
         "status": "created",
+        "completed_stages": [],
         "last_error": None,
         "reflection_results": [],
     }

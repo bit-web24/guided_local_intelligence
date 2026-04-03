@@ -35,6 +35,7 @@ def test_save_and_load_run_state_round_trip(tmp_path):
         context={"answer": "hello"},
         files={"__stdout__": "hello"},
         status="succeeded",
+        completed_stages=["plan", "execute", "assemble", "finalize"],
         replan_count=1,
         max_replans=2,
     )
@@ -43,6 +44,7 @@ def test_save_and_load_run_state_round_trip(tmp_path):
     assert loaded["run_id"] == run_id
     assert loaded["user_prompt"] == "Say hello"
     assert loaded["status"] == "succeeded"
+    assert loaded["completed_stages"] == ["plan", "execute", "assemble", "finalize"]
     assert loaded["replan_count"] == 1
     assert loaded["files"]["__stdout__"] == "hello"
     assert loaded["plan"].tasks[0].status == TaskStatus.DONE

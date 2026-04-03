@@ -167,6 +167,9 @@ MODEL SELECTION:
 FILE OUTPUT RULES:
 - If the user explicitly asks for files to be generated (e.g. "Create a FastAPI app"), set `"write_to_file": true` and provide `"output_filenames"`.
 - If the user is just asking a conversational question, requesting an explanation, or summarizing text without needing files, set `"write_to_file": false` AND set `"output_filenames": []`.
+- When `"write_to_file": true`, the `final_output_keys` MUST be content fragments that the assembler can place into the requested files.
+- NEVER use file-creation status/path outputs such as `file_created`, `dir_created`, `output_path`, `write_status`, or similar as final outputs.
+- Do not create standalone "create directory" or "create empty file" tasks as the deliverable. The writer creates directories/files at the end; planning tasks should produce the file CONTENT.
 
 CODE PLANNING RULES:
 - Treat the cloud model as an architect and the local coder as the builder.
@@ -301,6 +304,10 @@ async def decompose(
     tool_registry=None,
     project_dir: str = "",
     on_retry: Callable[[int, str], None] | None = None,
+    existing_tasks: list[MicroTask] | None = None,
+    final_output_keys_override: list[str] | None = None,
+    output_filenames_override: list[str] | None = None,
+    write_to_file_override: bool | None = None,
 ) -> TaskPlan:
     """
     Send the user prompt to the large Ollama model and parse the returned
@@ -342,7 +349,13 @@ async def decompose(
         clean = re.sub(r"```json\s*|\s*```", "", raw).strip()
         try:
             data = json.loads(clean)
-            return _parse_task_plan(data)
+            return _parse_task_plan(
+                data,
+                existing_tasks=existing_tasks,
+                final_output_keys_override=final_output_keys_override,
+                output_filenames_override=output_filenames_override,
+                write_to_file_override=write_to_file_override,
+            )
         except (json.JSONDecodeError, KeyError, ValueError, DecompositionError) as e:
             last_error = e
             if on_retry is not None:
@@ -397,6 +410,10 @@ def _build_retry_feedback(error: Exception) -> str:
         parts.append(
             "Tool-bearing tasks must consume their own tool result placeholders inside the same task template."
         )
+    if "file-content fragments" in error_text:
+        parts.append(
+            "For write_to_file plans, final_output_keys must contain the actual file content fragments only; do not use directory/file creation status or path outputs as final outputs."
+        )
 
     parts.append("Return ONLY valid JSON matching the schema. No prose. No fences.")
     return " ".join(parts)
@@ -404,6 +421,85 @@ def _build_retry_feedback(error: Exception) -> str:
 
 _TOOL_RESULT_KEY_RE = re.compile(r"^(t\d+)_([a-z][a-z0-9_]*)_result$")
 _TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _next_task_id(used_ids: set[str]) -> str:
+    numeric_ids = [
+        int(match.group(1))
+        for task_id in used_ids
+        if (match := re.fullmatch(r"t(\d+)", task_id)) is not None
+    ]
+    next_number = max(numeric_ids, default=0) + 1
+    while f"t{next_number}" in used_ids:
+        next_number += 1
+    return f"t{next_number}"
+
+
+def _next_output_key(base_key: str, used_keys: set[str]) -> str:
+    if base_key not in used_keys:
+        return base_key
+    suffix = 2
+    while f"{base_key}_{suffix}" in used_keys:
+        suffix += 1
+    return f"{base_key}_{suffix}"
+
+
+def _normalize_suffix_tasks(
+    existing_tasks: list[MicroTask],
+    new_tasks: list[MicroTask],
+    final_output_keys: list[str],
+) -> tuple[list[MicroTask], list[str]]:
+    """Rename colliding suffix task ids/output keys and rewrite references."""
+    used_ids = {task.id for task in existing_tasks}
+    used_output_keys = {task.output_key for task in existing_tasks}
+    id_map: dict[str, str] = {}
+    output_key_map: dict[str, str] = {}
+
+    for task in new_tasks:
+        new_id = task.id
+        if new_id in used_ids:
+            new_id = _next_task_id(used_ids)
+        used_ids.add(new_id)
+        id_map[task.id] = new_id
+
+        new_output_key = task.output_key
+        if new_output_key in used_output_keys:
+            new_output_key = _next_output_key(new_output_key, used_output_keys)
+        used_output_keys.add(new_output_key)
+        output_key_map[task.output_key] = new_output_key
+
+    normalized_tasks: list[MicroTask] = []
+    for task in new_tasks:
+        template = task.system_prompt_template
+        placeholders = set(_TEMPLATE_PLACEHOLDER_RE.findall(template))
+
+        for old_key, new_key in output_key_map.items():
+            if old_key != new_key:
+                template = template.replace(f"{{{old_key}}}", f"{{{new_key}}}")
+
+        for placeholder in sorted(placeholders):
+            for old_id, new_id in id_map.items():
+                if old_id != new_id and placeholder.startswith(f"{old_id}_"):
+                    remapped_placeholder = f"{new_id}_{placeholder[len(old_id) + 1:]}"
+                    template = template.replace(
+                        f"{{{placeholder}}}",
+                        f"{{{remapped_placeholder}}}",
+                    )
+                    break
+
+        normalized_tasks.append(replace(
+            task,
+            id=id_map[task.id],
+            output_key=output_key_map[task.output_key],
+            depends_on=[id_map.get(dep_id, dep_id) for dep_id in task.depends_on],
+            system_prompt_template=template,
+        ))
+
+    normalized_final_output_keys = [
+        output_key_map.get(output_key, output_key)
+        for output_key in final_output_keys
+    ]
+    return normalized_tasks, normalized_final_output_keys
 
 
 def _repair_task_plan(plan: TaskPlan) -> TaskPlan:
@@ -484,7 +580,14 @@ def _inject_dependency_context(template: str, output_keys: list[str]) -> str:
     return template
 
 
-def _parse_task_plan(data: dict) -> TaskPlan:
+def _parse_task_plan(
+    data: dict,
+    *,
+    existing_tasks: list[MicroTask] | None = None,
+    final_output_keys_override: list[str] | None = None,
+    output_filenames_override: list[str] | None = None,
+    write_to_file_override: bool | None = None,
+) -> TaskPlan:
     """
     Parse the raw JSON dict returned by the large model into a TaskPlan.
 
@@ -514,11 +617,33 @@ def _parse_task_plan(data: dict) -> TaskPlan:
             mcp_tool_args=t.get("mcp_tool_args", {}),
         ))
 
+    preserved_tasks = list(existing_tasks or [])
+    effective_final_output_keys = (
+        list(final_output_keys_override)
+        if final_output_keys_override is not None
+        else list(data["final_output_keys"])
+    )
+    if preserved_tasks:
+        tasks, effective_final_output_keys = _normalize_suffix_tasks(
+            preserved_tasks,
+            tasks,
+            effective_final_output_keys,
+        )
+
+    merged_tasks = preserved_tasks + tasks
     plan = TaskPlan(
-        tasks=tasks,
-        final_output_keys=data["final_output_keys"],
-        output_filenames=data.get("output_filenames", []),
-        write_to_file=data.get("write_to_file", True),
+        tasks=merged_tasks,
+        final_output_keys=effective_final_output_keys,
+        output_filenames=(
+            list(output_filenames_override)
+            if output_filenames_override is not None
+            else data.get("output_filenames", [])
+        ),
+        write_to_file=(
+            write_to_file_override
+            if write_to_file_override is not None
+            else data.get("write_to_file", True)
+        ),
     )
     try:
         validate_task_plan(plan)

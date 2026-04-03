@@ -51,6 +51,7 @@ class TaskPlan:
 
 # ContextDict: task output_key → task output value (plain string, already validated)
 ContextDict = dict[str, str]
+StageList = list[str]
 
 
 @dataclass
@@ -67,4 +68,3 @@ class ReflectionResult:
     passed: bool
     reason: str                      # "PASS" or explanation of failure
     used_cloud: bool = False         # True if cloud model was used for this reflection
-

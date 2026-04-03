@@ -11,10 +11,27 @@ from adp.models.task import TaskPlan
 _SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _MODEL_TYPES = {"coder", "general"}
+_NON_CONTENT_KEY_RE = re.compile(
+    r"(^|_)(status|path|filename|file_name|dirname|dir_name|directory|folder|created|creation|mkdir)($|_)"
+)
+_NON_CONTENT_DESC_RE = re.compile(
+    r"\b(create|created|creating)\b.*\b(file|directory|folder)\b|\b(file|directory|folder)\b.*\b(create|created|creating)\b",
+    re.IGNORECASE,
+)
 
 
 class PlanValidationError(ValueError):
     """Raised when a decomposed task plan violates structural guarantees."""
+
+
+def _looks_like_non_content_final_output(task) -> bool:
+    key = task.output_key.lower()
+    description = task.description.lower()
+    if _NON_CONTENT_KEY_RE.search(key):
+        return True
+    if _NON_CONTENT_DESC_RE.search(description):
+        return True
+    return False
 
 
 def validate_task_plan(plan: TaskPlan) -> None:
@@ -123,6 +140,17 @@ def validate_task_plan(plan: TaskPlan) -> None:
         if not plan.output_filenames:
             raise PlanValidationError(
                 "write_to_file=True requires at least one output filename."
+            )
+        non_content_final_outputs = sorted(
+            task.output_key
+            for task in plan.tasks
+            if task.output_key in plan.final_output_keys
+            and _looks_like_non_content_final_output(task)
+        )
+        if non_content_final_outputs:
+            raise PlanValidationError(
+                "write_to_file=True requires final_output_keys to be file-content fragments, "
+                f"not file/directory status or path artifacts: {non_content_final_outputs}"
             )
     elif plan.output_filenames:
         raise PlanValidationError(

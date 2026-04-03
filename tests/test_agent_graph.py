@@ -140,6 +140,7 @@ async def test_graph_resumes_from_persisted_run_state(tmp_path):
         context={"schema": "schema-value"},
         files={},
         status="executed",
+        completed_stages=["plan", "execute"],
         replan_count=0,
         max_replans=2,
     )
@@ -165,4 +166,44 @@ async def test_graph_resumes_from_persisted_run_state(tmp_path):
 
     assert result.context["answer"] == "resumed answer"
     assert execute_mock.await_count == 1
+    assert "RESUMING" in callbacks.stages
+
+
+@pytest.mark.asyncio
+async def test_graph_resumes_from_assembled_state_without_reexecution(tmp_path):
+    callbacks = _Callbacks()
+    run_id = generate_run_id()
+    plan = _make_text_plan()
+    plan.tasks[0].status = TaskStatus.DONE
+    plan.tasks[0].output = "final answer"
+    save_run_state(
+        output_dir=str(tmp_path),
+        run_id=run_id,
+        user_prompt="Resume finalize only",
+        plan=plan,
+        context={"answer": "final answer"},
+        files={"__stdout__": "done"},
+        status="assembled",
+        completed_stages=["plan", "execute", "assemble"],
+        replan_count=0,
+        max_replans=2,
+    )
+
+    with patch("adp.agent_graph.execute_plan", AsyncMock()) as execute_mock, \
+         patch("adp.agent_graph.reflect_plan", AsyncMock()) as reflect_mock, \
+         patch("adp.agent_graph.verify_files_match_user_prompt", AsyncMock(return_value=None)), \
+         patch("adp.agent_graph.write_execution_log"), \
+         patch("adp.agent_graph.write_success_artifact"):
+        result = await run_agent_graph(
+            user_prompt="",
+            output_dir=str(tmp_path),
+            callbacks=callbacks,
+            mcp_manager=None,
+            tool_registry=None,
+            resume_run_id=run_id,
+        )
+
+    assert result.files["__stdout__"] == "done"
+    assert execute_mock.await_count == 0
+    assert reflect_mock.await_count == 0
     assert "RESUMING" in callbacks.stages

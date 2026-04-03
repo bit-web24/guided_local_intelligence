@@ -12,7 +12,7 @@ from adp.stages.decomposer import (
     decompose,
 )
 from adp.config import DECOMPOSITION_MAX_RETRIES
-from adp.models.task import AnchorType, TaskStatus
+from adp.models.task import AnchorType, MicroTask, TaskStatus
 
 
 VALID_PLAN_DATA = {
@@ -189,6 +189,168 @@ class TestParseTaskPlan:
         plan = _parse_task_plan(data)
         assert "Dependency write_status:" in plan.tasks[1].system_prompt_template
         assert "{write_status}" in plan.tasks[1].system_prompt_template
+
+    def test_parse_task_plan_can_merge_existing_tasks_for_partial_replan(self):
+        existing_task = MicroTask(
+            id="t1",
+            description="Existing schema",
+            system_prompt_template="EXAMPLES:\nInput: x\nOutput: y\n---\nInput: {input_text}\nOutput:",
+            input_text="run",
+            output_key="schema_json",
+            depends_on=[],
+            anchor=AnchorType.OUTPUT,
+            parallel_group=0,
+            status=TaskStatus.DONE,
+            output="schema",
+        )
+        data = {
+            "tasks": [
+                {
+                    "id": "t2",
+                    "description": "Write endpoint",
+                    "system_prompt_template": (
+                        "EXAMPLES:\n"
+                        "Schema: old\n"
+                        "Code: new\n"
+                        "---\n"
+                        "Schema: {schema_json}\n"
+                        "Input: {input_text}\n"
+                        "Code:"
+                    ),
+                    "input_text": "write endpoint",
+                    "output_key": "endpoint_code",
+                    "depends_on": ["t1"],
+                    "anchor": "Code:",
+                    "parallel_group": 1,
+                }
+            ],
+            "final_output_keys": ["endpoint_code"],
+            "output_filenames": ["ignored.py"],
+            "write_to_file": False,
+        }
+
+        plan = _parse_task_plan(
+            data,
+            existing_tasks=[existing_task],
+            final_output_keys_override=["endpoint_code"],
+            output_filenames_override=["app.py"],
+            write_to_file_override=True,
+        )
+
+        assert [task.id for task in plan.tasks] == ["t1", "t2"]
+        assert plan.output_filenames == ["app.py"]
+        assert plan.write_to_file is True
+
+    def test_partial_replan_remaps_duplicate_task_ids_and_dependencies(self):
+        existing_task = MicroTask(
+            id="t1",
+            description="Existing schema",
+            system_prompt_template="EXAMPLES:\nInput: x\nOutput: y\n---\nInput: {input_text}\nOutput:",
+            input_text="run",
+            output_key="schema_json",
+            depends_on=[],
+            anchor=AnchorType.OUTPUT,
+            parallel_group=0,
+            status=TaskStatus.DONE,
+            output="schema",
+        )
+        data = {
+            "tasks": [
+                {
+                    "id": "t1",
+                    "description": "Read current file",
+                    "system_prompt_template": (
+                        "EXAMPLES:\n"
+                        "File: old\n"
+                        "Output: note\n"
+                        "---\n"
+                        "File: {t1_read_text_file_result}\n"
+                        "Input: {input_text}\n"
+                        "Output:"
+                    ),
+                    "input_text": "inspect",
+                    "output_key": "file_note",
+                    "depends_on": [],
+                    "anchor": "Output:",
+                    "parallel_group": 1,
+                    "mcp_tools": ["read_text_file"],
+                },
+                {
+                    "id": "t2",
+                    "description": "Write endpoint",
+                    "system_prompt_template": (
+                        "EXAMPLES:\n"
+                        "Context: old\n"
+                        "Code: new\n"
+                        "---\n"
+                        "Context: {file_note}\n"
+                        "Input: {input_text}\n"
+                        "Code:"
+                    ),
+                    "input_text": "write endpoint",
+                    "output_key": "endpoint_code",
+                    "depends_on": ["t1"],
+                    "anchor": "Code:",
+                    "parallel_group": 2,
+                },
+            ],
+            "final_output_keys": ["endpoint_code"],
+            "output_filenames": ["app.py"],
+        }
+
+        plan = _parse_task_plan(
+            data,
+            existing_tasks=[existing_task],
+        )
+
+        assert [task.id for task in plan.tasks] == ["t1", "t2", "t3"]
+        assert "{t2_read_text_file_result}" in plan.tasks[1].system_prompt_template
+        assert plan.tasks[2].depends_on == ["t2"]
+
+    def test_partial_replan_remaps_duplicate_output_keys_and_final_outputs(self):
+        existing_task = MicroTask(
+            id="t1",
+            description="Existing schema",
+            system_prompt_template="EXAMPLES:\nInput: x\nOutput: y\n---\nInput: {input_text}\nOutput:",
+            input_text="run",
+            output_key="endpoint_code",
+            depends_on=[],
+            anchor=AnchorType.OUTPUT,
+            parallel_group=0,
+            status=TaskStatus.DONE,
+            output="existing endpoint",
+        )
+        data = {
+            "tasks": [
+                {
+                    "id": "t2",
+                    "description": "Repair endpoint",
+                    "system_prompt_template": (
+                        "EXAMPLES:\n"
+                        "Input: old\n"
+                        "Code: new\n"
+                        "---\n"
+                        "Input: {input_text}\n"
+                        "Code:"
+                    ),
+                    "input_text": "repair endpoint",
+                    "output_key": "endpoint_code",
+                    "depends_on": [],
+                    "anchor": "Code:",
+                    "parallel_group": 1,
+                }
+            ],
+            "final_output_keys": ["endpoint_code"],
+            "output_filenames": ["app.py"],
+        }
+
+        plan = _parse_task_plan(
+            data,
+            existing_tasks=[existing_task],
+        )
+
+        assert plan.tasks[1].output_key == "endpoint_code_2"
+        assert plan.final_output_keys == ["endpoint_code_2"]
 
 
 class TestDecomposerPrompt:

@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from adp.config import RUN_STATE_DIRNAME
-from adp.models.task import AnchorType, ContextDict, MicroTask, TaskPlan, TaskStatus
+from adp.models.task import AnchorType, ContextDict, MicroTask, StageList, TaskPlan, TaskStatus
 
 
 def generate_run_id() -> str:
@@ -35,6 +35,7 @@ def save_run_state(
     context: ContextDict,
     files: dict[str, str],
     status: str,
+    completed_stages: StageList,
     replan_count: int,
     max_replans: int,
     last_error: str | None = None,
@@ -48,6 +49,7 @@ def save_run_state(
         "run_id": run_id,
         "user_prompt": user_prompt,
         "status": status,
+        "completed_stages": list(completed_stages),
         "replan_count": replan_count,
         "max_replans": max_replans,
         "last_error": last_error,
@@ -68,6 +70,7 @@ def load_run_state(output_dir: str, run_id: str) -> dict:
         data["plan"] = _plan_from_dict(data["plan"])
     data["context"] = dict(data.get("context", {}))
     data["files"] = dict(data.get("files", {}))
+    data["completed_stages"] = list(data.get("completed_stages", []))
     return data
 
 
