@@ -7,6 +7,7 @@ from adp.stages.decomposer import (
     DECOMPOSER_SYSTEM_PROMPT,
     DecompositionError,
     _MCP_TOOL_BLOCK_TEMPLATE,
+    _build_retry_feedback,
     _parse_task_plan,
     decompose,
 )
@@ -72,6 +73,122 @@ class TestParseTaskPlan:
         bad = {"tasks": [{"id": "t1"}], "final_output_keys": [], "output_filenames": []}
         with pytest.raises((KeyError, ValueError)):
             _parse_task_plan(bad)
+
+    def test_repairs_cross_task_mcp_placeholder_to_dependency_output_key(self):
+        data = {
+            "tasks": [
+                {
+                    "id": "t1",
+                    "description": "Summarize file",
+                    "system_prompt_template": (
+                        "EXAMPLES:\n"
+                        "File: abc\n"
+                        "Output: summary\n"
+                        "---\n"
+                        "File: {t1_read_text_file_result}\n"
+                        "Input: {input_text}\n"
+                        "Output:"
+                    ),
+                    "input_text": "summarize",
+                    "output_key": "file_summary",
+                    "depends_on": [],
+                    "anchor": "Output:",
+                    "parallel_group": 0,
+                    "mcp_tools": ["read_text_file"],
+                },
+                {
+                    "id": "t2",
+                    "description": "Write patch",
+                    "system_prompt_template": (
+                        "EXAMPLES:\n"
+                        "Summary: old\n"
+                        "Code: patch\n"
+                        "---\n"
+                        "Summary: {t1_read_text_file_result}\n"
+                        "Input: {input_text}\n"
+                        "Code:"
+                    ),
+                    "input_text": "write patch",
+                    "output_key": "patch_code",
+                    "depends_on": ["t1"],
+                    "anchor": "Code:",
+                    "parallel_group": 1,
+                },
+            ],
+            "final_output_keys": ["patch_code"],
+            "output_filenames": ["main.py"],
+        }
+
+        plan = _parse_task_plan(data)
+        assert "{file_summary}" in plan.tasks[1].system_prompt_template
+        assert "{t1_read_text_file_result}" not in plan.tasks[1].system_prompt_template
+
+    def test_repairs_prefixed_dependency_placeholder_to_dependency_output_key(self):
+        data = {
+            "tasks": [
+                {
+                    **VALID_PLAN_DATA["tasks"][0],
+                    "output_key": "file_content",
+                },
+                {
+                    "id": "t2",
+                    "description": "Use prior file content",
+                    "system_prompt_template": (
+                        "EXAMPLES:\n"
+                        "Context: old\n"
+                        "Output: next\n"
+                        "---\n"
+                        "Context: {t1_file_content}\n"
+                        "Input: {input_text}\n"
+                        "Output:"
+                    ),
+                    "input_text": "continue",
+                    "output_key": "final_answer",
+                    "depends_on": ["t1"],
+                    "anchor": "Output:",
+                    "parallel_group": 1,
+                },
+            ],
+            "final_output_keys": ["final_answer"],
+            "output_filenames": ["output.txt"],
+        }
+
+        plan = _parse_task_plan(data)
+        assert "{file_content}" in plan.tasks[1].system_prompt_template
+        assert "{t1_file_content}" not in plan.tasks[1].system_prompt_template
+
+    def test_repairs_missing_dependency_placeholder_by_injecting_context(self):
+        data = {
+            "tasks": [
+                {
+                    **VALID_PLAN_DATA["tasks"][0],
+                    "output_key": "write_status",
+                },
+                {
+                    "id": "t2",
+                    "description": "Use prior status",
+                    "system_prompt_template": (
+                        "EXAMPLES:\n"
+                        "Input: foo\n"
+                        "Output: bar\n"
+                        "---\n"
+                        "Input: {input_text}\n"
+                        "Output:"
+                    ),
+                    "input_text": "continue",
+                    "output_key": "final_answer",
+                    "depends_on": ["t1"],
+                    "anchor": "Output:",
+                    "parallel_group": 1,
+                },
+            ],
+            "final_output_keys": ["final_answer"],
+            "output_filenames": ["output.txt"],
+        }
+
+        plan = _parse_task_plan(data)
+        assert "Dependency write_status:" in plan.tasks[1].system_prompt_template
+        assert "{write_status}" in plan.tasks[1].system_prompt_template
 
 
 class TestDecomposerPrompt:
@@ -140,6 +257,50 @@ class TestDecomposeRetry:
         assert len(retries) == 1
         assert retries[0][0] == 1
         assert "Expecting value" in retries[0][1]
+
+    def test_retry_feedback_mentions_examples_and_local_micro_tasks(self):
+        message = _build_retry_feedback(
+            DecompositionError(
+                "Task 't4' system_prompt_template missing 'EXAMPLES:' section. "
+                "This is non-negotiable — all templates must contain few-shot examples."
+            )
+        )
+
+        assert "small local models" in message
+        assert "micro-granular" in message
+        assert "Every task must contain 3 to 5 realistic few-shot examples" in message
+        assert "missing EXAMPLES error is non-negotiable" in message
+
+    @pytest.mark.asyncio
+    async def test_retry_message_injects_missing_examples_guidance(self):
+        invalid_then_valid = [
+            json.dumps({
+                "tasks": [
+                    {
+                        **VALID_PLAN_DATA["tasks"][0],
+                        "system_prompt_template": "No examples here at all.",
+                    }
+                ],
+                "final_output_keys": ["name"],
+                "output_filenames": ["output.txt"],
+            }),
+            json.dumps(VALID_PLAN_DATA),
+        ]
+
+        seen_messages: list[list[dict]] = []
+
+        async def mock_call(messages, **kwargs):
+            seen_messages.append(messages)
+            return invalid_then_valid[len(seen_messages) - 1]
+
+        with patch("adp.stages.decomposer.call_cloud_with_history", side_effect=mock_call):
+            plan = await decompose("test prompt")
+
+        assert plan.tasks[0].id == "t1"
+        retry_user_message = seen_messages[1][-1]["content"]
+        assert "missing EXAMPLES error is non-negotiable" in retry_user_message
+        assert "small local models" in retry_user_message
+        assert "Return ONLY valid JSON matching the schema" in retry_user_message
 
     @pytest.mark.asyncio
     async def test_raises_after_max_retries(self):

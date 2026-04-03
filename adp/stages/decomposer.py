@@ -9,6 +9,7 @@ retries on JSON parse failure using self-correction messages).
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 import re
 from typing import Callable
@@ -341,7 +342,7 @@ async def decompose(
         try:
             data = json.loads(clean)
             return _parse_task_plan(data)
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
+        except (json.JSONDecodeError, KeyError, ValueError, DecompositionError) as e:
             last_error = e
             if on_retry is not None:
                 on_retry(attempt + 1, str(e))
@@ -349,10 +350,7 @@ async def decompose(
             messages.append({"role": "assistant", "content": raw})
             messages.append({
                 "role": "user",
-                "content": (
-                    f"Your response failed to parse: {e}. "
-                    "Return ONLY valid JSON matching the schema. No prose. No fences."
-                ),
+                "content": _build_retry_feedback(e),
             })
 
     raise DecompositionError(
@@ -365,6 +363,124 @@ def decompose_sync(user_prompt: str) -> TaskPlan:
     """Synchronous wrapper — use only outside an event loop (e.g. scripts/tests)."""
     import asyncio
     return asyncio.run(decompose(user_prompt))
+
+
+def _build_retry_feedback(error: Exception) -> str:
+    """Build targeted self-correction guidance for the next decomposition attempt."""
+    parts = [
+        f"Your previous JSON failed validation/parsing: {error}.",
+        "Fix that exact issue and return the full plan again.",
+        "Plan for small local models first: keep tasks micro-granular, specialist, and dependency-aware.",
+        "Prefer many tiny local tasks over broad tasks. One task should produce one narrow artifact only.",
+        "Every task must contain 3 to 5 realistic few-shot examples in system_prompt_template.",
+        "Every task template must end with only its anchor token on the final line.",
+        "If a task lists depends_on, its template must reference every dependency output_key.",
+        "If a task declares mcp_tools, its template must reference each tool result using the exact task-scoped placeholder format {task_id}_{tool_name}_result.",
+        "Never let one task reference another task's tool-result placeholder directly; cross-task data must flow through dependency output_key placeholders.",
+    ]
+
+    error_text = str(error)
+    if "missing 'EXAMPLES:' section" in error_text:
+        parts.append(
+            "The missing EXAMPLES error is non-negotiable: add 3 to 5 concrete input→output examples to every task before the final input block."
+        )
+    if "depends on outputs not referenced" in error_text:
+        parts.append(
+            "For every depends_on entry, inject the dependency output_key between EXAMPLES and the final Input block."
+        )
+    if "references unknown placeholders" in error_text:
+        parts.append(
+            "Unknown placeholders usually mean you used another task's MCP key or invented a placeholder name; use dependency output_key placeholders instead."
+        )
+    if "assigns MCP tools but does not reference their results" in error_text:
+        parts.append(
+            "Tool-bearing tasks must consume their own tool result placeholders inside the same task template."
+        )
+
+    parts.append("Return ONLY valid JSON matching the schema. No prose. No fences.")
+    return " ".join(parts)
+
+
+_TOOL_RESULT_KEY_RE = re.compile(r"^(t\d+)_([a-z][a-z0-9_]*)_result$")
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _repair_task_plan(plan: TaskPlan) -> TaskPlan:
+    """Deterministically repair narrow, recurrent planner mistakes."""
+    task_map = {task.id: task for task in plan.tasks}
+    repaired_tasks: list[MicroTask] = []
+
+    for task in plan.tasks:
+        template = task.system_prompt_template
+        placeholders = set(_TEMPLATE_PLACEHOLDER_RE.findall(template))
+
+        # 1) Rewrite cross-task MCP placeholders to the dependency output_key.
+        for placeholder in sorted(placeholders):
+            match = _TOOL_RESULT_KEY_RE.match(placeholder)
+            if match is not None:
+                source_task_id = match.group(1)
+                if source_task_id != task.id and source_task_id in task.depends_on:
+                    source_task = task_map.get(source_task_id)
+                    if source_task is not None:
+                        template = template.replace(
+                            f"{{{placeholder}}}",
+                            f"{{{source_task.output_key}}}",
+                        )
+                        continue
+
+            # 2) Rewrite task-id-prefixed placeholders like {t1_file_content}
+            #    to the dependency output_key when they clearly point at a dep.
+            dep_match = re.match(r"^(t\d+)_", placeholder)
+            if dep_match is None:
+                continue
+            source_task_id = dep_match.group(1)
+            if source_task_id != task.id and source_task_id in task.depends_on:
+                source_task = task_map.get(source_task_id)
+                if source_task is not None:
+                    template = template.replace(
+                        f"{{{placeholder}}}",
+                        f"{{{source_task.output_key}}}",
+                    )
+
+        # 3) Ensure every dependency output_key is actually referenced.
+        missing_dep_keys = [
+            task_map[dep_id].output_key
+            for dep_id in task.depends_on
+            if dep_id in task_map and f"{{{task_map[dep_id].output_key}}}" not in template
+        ]
+        if missing_dep_keys:
+            template = _inject_dependency_context(template, missing_dep_keys)
+
+        repaired_tasks.append(replace(task, system_prompt_template=template))
+
+    return TaskPlan(
+        tasks=repaired_tasks,
+        final_output_keys=list(plan.final_output_keys),
+        output_filenames=list(plan.output_filenames),
+        write_to_file=plan.write_to_file,
+    )
+
+
+def _inject_dependency_context(template: str, output_keys: list[str]) -> str:
+    """Insert missing dependency placeholders before the final input block."""
+    context_lines = "".join(
+        f"Dependency {output_key}:\n{{{output_key}}}\n\n"
+        for output_key in output_keys
+    )
+
+    marker = "\n---\nInput: {input_text}\n"
+    if marker in template:
+        return template.replace(marker, f"\n---\n{context_lines}Input: {{input_text}}\n", 1)
+
+    fallback_marker = "\nInput: {input_text}\n"
+    if fallback_marker in template:
+        return template.replace(
+            fallback_marker,
+            f"\n{context_lines}Input: {{input_text}}\n",
+            1,
+        )
+
+    return template
 
 
 def _parse_task_plan(data: dict) -> TaskPlan:
@@ -403,5 +519,10 @@ def _parse_task_plan(data: dict) -> TaskPlan:
         output_filenames=data.get("output_filenames", []),
         write_to_file=data.get("write_to_file", True),
     )
-    validate_task_plan(plan)
-    return plan
+    try:
+        validate_task_plan(plan)
+        return plan
+    except PlanValidationError:
+        repaired = _repair_task_plan(plan)
+        validate_task_plan(repaired)
+        return repaired

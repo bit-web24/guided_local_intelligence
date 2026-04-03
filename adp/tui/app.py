@@ -32,6 +32,7 @@ from rich.style import Style
 from rich.text import Text
 
 from adp.models.task import MicroTask, ReflectionResult, TaskPlan, TaskStatus
+from adp.config import DECOMPOSITION_MAX_RETRIES
 from adp.tui import panels
 from adp.tui.input_handler import get_user_prompt
 
@@ -185,7 +186,7 @@ def make_tui_callbacks() -> TUICallbacks:
         append_activity(f"Plan ready: {len(plan.tasks)} tasks")
 
     def on_decomposition_retry(attempt: int, reason: str) -> None:
-        append_activity(f"Decomposition retry {attempt}/3: {reason}")
+        append_activity(f"Decomposition retry {attempt}/{DECOMPOSITION_MAX_RETRIES}: {reason}")
 
     def on_task_start(task: MicroTask) -> None:
         _update_state(current_task=task, streamed_output="")
@@ -244,7 +245,9 @@ def make_plain_callbacks() -> TUICallbacks:
         console.print(f"[cyan]Plan: {len(plan.tasks)} tasks → {plan.output_filenames}[/]")
 
     def on_decomposition_retry(attempt: int, reason: str) -> None:
-        console.print(f"  [yellow]↺ decompose {attempt}/3[/] {reason}")
+        console.print(
+            f"  [yellow]↺ decompose {attempt}/{DECOMPOSITION_MAX_RETRIES}[/] {reason}"
+        )
 
     def on_task_start(task: MicroTask) -> None:
         console.print(f"  [yellow]▶ {task.id}[/] {task.description}")
