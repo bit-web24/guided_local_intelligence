@@ -53,6 +53,36 @@ def verify_final_outputs(plan: TaskPlan, files: dict[str, str]) -> None:
         )
 
 
+def verify_written_outputs(plan: TaskPlan, files: dict[str, str], output_dir: str) -> None:
+    """Validate the actual on-disk outputs after the writer reports success."""
+    if not plan.write_to_file:
+        return
+
+    base = Path(output_dir)
+    for filename in plan.output_filenames:
+        path = base / filename
+        if not path.is_file():
+            raise OutputVerificationError(
+                f"Expected written file '{filename}' is missing on disk."
+            )
+
+        disk_content = path.read_text(encoding="utf-8")
+        expected_content = files.get(filename)
+        if expected_content is None:
+            raise OutputVerificationError(
+                f"Expected content for '{filename}' is missing from in-memory outputs."
+            )
+        if disk_content != expected_content:
+            raise OutputVerificationError(
+                f"Written file '{filename}' does not match the assembled content."
+            )
+        if not disk_content.strip():
+            raise OutputVerificationError(
+                f"Written file '{filename}' is empty on disk."
+            )
+        _verify_by_extension(filename, disk_content)
+
+
 def _verify_output_files(plan: TaskPlan, files: dict[str, str]) -> None:
     expected = set(plan.output_filenames)
     actual = set(files)

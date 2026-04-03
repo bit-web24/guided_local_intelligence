@@ -26,6 +26,7 @@ from typing import Callable
 
 from adp.agent_graph import run_agent_graph
 from adp.config import DEFAULT_OUTPUT_DIR, get_model_config, set_model_config
+from adp.engine.call_stats import reset_model_call_counts
 from adp.engine.local_client import check_ollama_connection
 from adp.models.task import PipelineResult
 from adp.tui.app import TUICallbacks, interactive_loop, make_plain_callbacks, run_with_live
@@ -92,6 +93,7 @@ def run_pipeline(
     triggering 'Attempted to exit cancel scope in a different task'.
     """
     import anyio
+    reset_model_call_counts()
     return anyio.run(
         partial(run_pipeline_async, user_prompt, output_dir, callbacks, debug, resume_run_id),
         backend="asyncio",

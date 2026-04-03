@@ -14,6 +14,7 @@ from adp.config import (
     CLOUD_TIMEOUT,
     OLLAMA_BASE_URL,
 )
+from adp.engine.call_stats import record_model_call
 
 
 async def call_cloud_async(
@@ -49,6 +50,7 @@ async def call_cloud_async(
             json=payload,
         )
         response.raise_for_status()
+        record_model_call(model_config.cloud)
         data = response.json()
         return data["message"]["content"]
 
@@ -79,5 +81,6 @@ async def call_cloud_with_history(
             json=payload,
         )
         response.raise_for_status()
+        record_model_call(model_config.cloud)
         data = response.json()
         return data["message"]["content"]

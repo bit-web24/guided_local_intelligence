@@ -238,6 +238,7 @@ def render_footer() -> Text:
 def render_completion_summary(
     written: list[tuple[str, int]],
     output_dir: str,
+    model_call_counts: dict[str, int] | None = None,
 ) -> Panel:
     """Completion panel shown after all files are written."""
     table = Table.grid(padding=(0, 2))
@@ -252,6 +253,11 @@ def render_completion_summary(
     t = Text()
     t.append(f"\nAll files written to: ", style=th.COLOR_FOOTER)
     t.append(output_dir, style=th.COLOR_FILE)
+
+    if model_call_counts:
+        t.append("\n\nLLM calls:\n", style=th.COLOR_TITLE)
+        for model_name, count in model_call_counts.items():
+            t.append(f"  {model_name}: {count}\n", style=th.COLOR_FOOTER)
 
     return Panel(
         RichGroup(table, t),
@@ -271,3 +277,17 @@ def render_text_response(text: str) -> Panel:
         border_style="green",
         padding=(1, 2),
     )
+
+
+def render_model_call_summary(model_call_counts: dict[str, int]) -> Text:
+    """Render per-model call counts for plain-text completion output."""
+    t = Text()
+    t.append("LLM calls\n", style=th.COLOR_TITLE)
+    if not model_call_counts:
+        t.append("No model calls recorded.", style=th.COLOR_FOOTER)
+        return t
+    for index, (model_name, count) in enumerate(model_call_counts.items()):
+        t.append(f"{model_name}: {count}", style=th.COLOR_FOOTER)
+        if index != len(model_call_counts) - 1:
+            t.append("\n")
+    return t

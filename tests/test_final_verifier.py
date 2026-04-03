@@ -1,6 +1,8 @@
 """Tests for final output verification."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from adp.engine.final_verifier import (
@@ -8,6 +10,7 @@ from adp.engine.final_verifier import (
     verify_assembly_inputs,
     verify_execution_succeeded,
     verify_final_outputs,
+    verify_written_outputs,
 )
 from adp.models.task import AnchorType, MicroTask, TaskPlan, TaskStatus
 
@@ -113,3 +116,22 @@ def test_verify_final_outputs_rejects_file_delimiters_in_text_mode():
 
     with pytest.raises(OutputVerificationError, match="file delimiters"):
         verify_final_outputs(plan, {"__stdout__": "--- FILE: app.py ---\nhello\n--- END FILE ---"})
+
+
+def test_verify_written_outputs_accepts_matching_disk_content(tmp_path: Path):
+    plan = _make_plan()
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    (output_dir / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+
+    verify_written_outputs(plan, {"app.py": "def main():\n    return 1\n"}, str(output_dir))
+
+
+def test_verify_written_outputs_rejects_mismatched_disk_content(tmp_path: Path):
+    plan = _make_plan()
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    (output_dir / "app.py").write_text("def main():\n    return 2\n", encoding="utf-8")
+
+    with pytest.raises(OutputVerificationError, match="does not match"):
+        verify_written_outputs(plan, {"app.py": "def main():\n    return 1\n"}, str(output_dir))

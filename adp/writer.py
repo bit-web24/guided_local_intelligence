@@ -1,6 +1,7 @@
 """File writer — writes assembled output files and run artifacts to disk."""
 from __future__ import annotations
 
+import os
 import json
 from datetime import datetime
 from pathlib import Path
@@ -33,13 +34,26 @@ def write_output_files(
 
         path = base / file_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        tmp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
         size = path.stat().st_size
         if size == 0:
             raise IOError(
                 f"File '{filename}' was written but is 0 bytes — "
                 "this indicates the assembler returned empty content."
             )
+        try:
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
         written.append((filename, size))
 
     return written

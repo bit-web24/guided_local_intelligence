@@ -56,6 +56,7 @@ STAGE_LABELS = {
     "REPLANNING":  "Replanning run…",
     "ASSEMBLING":  "Assembling files…",
     "WRITING":     "Writing to disk…",
+    "FINAL_VERIFY":"Verifying written files…",
     "DONE":        "Complete ✓",
     "ERROR":       "Error ✗",
 }

@@ -33,6 +33,7 @@ from rich.text import Text
 
 from adp.models.task import MicroTask, ReflectionResult, TaskPlan, TaskStatus
 from adp.config import DECOMPOSITION_MAX_RETRIES
+from adp.engine.call_stats import get_model_call_counts
 from adp.tui import panels
 from adp.tui.input_handler import get_user_prompt
 
@@ -312,6 +313,7 @@ def make_plain_callbacks() -> TUICallbacks:
             console.print(f"Files written to [cyan]{output_dir}[/]")
             for fname, size in written:
                 console.print(f"  [green]✓[/] {fname} ({size:,} bytes)")
+        console.print(panels.render_model_call_summary(get_model_call_counts()))
 
     def on_error(message: str) -> None:
         console.print(f"[bold red]Error:[/] {message}")
@@ -449,10 +451,12 @@ def run_with_live(
     state = _read_state()
     if state.get("stdout_text"):
         console.print(panels.render_text_response(state["stdout_text"]))
+        console.print(panels.render_model_call_summary(get_model_call_counts()))
     elif state["written_files"]:
         console.print(panels.render_completion_summary(
             state["written_files"],
             state["output_dir"],
+            get_model_call_counts(),
         ))
 
 

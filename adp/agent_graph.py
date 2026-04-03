@@ -7,12 +7,18 @@ from typing import Any, Literal, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from adp.config import MAX_REPLANS, REFLECT_ENABLED
+from adp.config import (
+    FINAL_ASSEMBLY_VERIFY_RETRIES,
+    FINAL_WRITE_VERIFY_RETRIES,
+    MAX_REPLANS,
+    REFLECT_ENABLED,
+)
 from adp.engine.final_verifier import (
     OutputVerificationError,
     verify_assembly_inputs,
     verify_execution_succeeded,
     verify_final_outputs,
+    verify_written_outputs,
 )
 from adp.engine.run_store import generate_run_id, load_run_state, save_run_state
 from adp.models.task import ContextDict, PipelineResult, TaskPlan
@@ -272,18 +278,60 @@ async def _reflect_node(state: AgentState) -> Command[Literal["assemble", "repla
     return Command(update=updates, goto="assemble")
 
 
-async def _finalize_node(state: AgentState) -> AgentState:
+async def _finalize_node(state: AgentState) -> Command[Literal["replan", "fail", "complete"]]:
     callbacks = state["callbacks"]
     plan = state["plan"]
     files = state.get("files", {})
     if plan is None:
         raise ValueError("Cannot finalize without a task plan.")
 
-    callbacks.on_stage("VERIFYING")
-    verify_execution_succeeded(plan)
-    verify_final_outputs(plan, files)
+    try:
+        verify_execution_succeeded(plan)
+    except OutputVerificationError as exc:
+        updates: AgentState = {"last_error": str(exc), "status": "failed"}
+        return Command(update=updates, goto="fail")
 
-    callbacks.on_stage("WRITING")
+    callbacks.on_stage("VERIFYING")
+    last_error: str | None = None
+    for attempt in range(FINAL_ASSEMBLY_VERIFY_RETRIES):
+        try:
+            verify_final_outputs(plan, files)
+            break
+        except OutputVerificationError as exc:
+            last_error = (
+                f"Final assembled output verification failed: {exc}"
+            )
+            if attempt < FINAL_ASSEMBLY_VERIFY_RETRIES - 1:
+                callbacks.on_stage("ASSEMBLING")
+                files = await assemble(plan, state.get("context", {}), user_prompt=state["user_prompt"])
+                continue
+            if state.get("replan_count", 0) < state.get("max_replans", MAX_REPLANS):
+                updates = {"files": files, "last_error": last_error, "status": "replanning"}
+                return Command(update=updates, goto="replan")
+            return Command(update={"last_error": last_error, "status": "failed"}, goto="fail")
+
+    written_files: list[tuple[str, int]] = []
+    stdout_text: str | None = None
+    if plan.write_to_file:
+        write_error: str | None = None
+        for attempt in range(FINAL_WRITE_VERIFY_RETRIES):
+            callbacks.on_stage("WRITING")
+            try:
+                written_files = write_output_files(files, state["output_dir"])
+                callbacks.on_stage("FINAL_VERIFY")
+                verify_written_outputs(plan, files, state["output_dir"])
+                write_error = None
+                break
+            except (IOError, OutputVerificationError, OSError, ValueError) as exc:
+                write_error = f"Written output verification failed: {exc}"
+                if attempt == FINAL_WRITE_VERIFY_RETRIES - 1:
+                    return Command(
+                        update={"last_error": write_error, "status": "failed"},
+                        goto="fail",
+                    )
+    else:
+        stdout_text = files.get("__stdout__", "Error: No text output returned.")
+
     write_execution_log(state["user_prompt"], plan, state["output_dir"])
     write_success_artifact(
         state["user_prompt"],
@@ -293,16 +341,10 @@ async def _finalize_node(state: AgentState) -> AgentState:
         state["output_dir"],
     )
 
-    written_files: list[tuple[str, int]] = []
-    stdout_text: str | None = None
-    if plan.write_to_file:
-        written_files = write_output_files(files, state["output_dir"])
-    else:
-        stdout_text = files.get("__stdout__", "Error: No text output returned.")
-
     callbacks.on_complete(written_files, state["output_dir"], stdout_text=stdout_text)
     result = PipelineResult(files=files, context=state.get("context", {}), tasks=plan.tasks)
     updates: AgentState = {
+        "files": files,
         "written_files": written_files,
         "stdout_text": stdout_text,
         "status": "succeeded",
@@ -311,7 +353,12 @@ async def _finalize_node(state: AgentState) -> AgentState:
     combined = dict(state)
     combined.update(updates)
     _persist(combined)  # type: ignore[arg-type]
-    return updates
+    return Command(update=updates, goto="complete")
+
+
+async def _complete_node(state: AgentState) -> AgentState:
+    """Terminal success node after final verification and writing."""
+    return state
 
 
 async def _fail_node(state: AgentState) -> AgentState:
@@ -343,6 +390,7 @@ def build_agent_graph():
     graph.add_node("reflect", _reflect_node)
     graph.add_node("assemble", _assemble_node)
     graph.add_node("finalize", _finalize_node)
+    graph.add_node("complete", _complete_node)
     graph.add_node("fail", _fail_node)
 
     graph.add_edge(START, "initialize")
@@ -351,7 +399,7 @@ def build_agent_graph():
     # execute → reflect or assemble is handled by Command in _execute_node
     # reflect → assemble, replan, or fail is handled by Command in _reflect_node
     graph.add_edge("assemble", "finalize")
-    graph.add_edge("finalize", END)
+    graph.add_edge("complete", END)
     graph.add_edge("fail", END)
     return graph.compile()
 

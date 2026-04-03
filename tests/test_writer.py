@@ -18,6 +18,7 @@ def test_write_output_files_writes_relative_paths_under_output_dir(tmp_path: Pat
 
     assert written == [("lib/main.py", len("print('hi')\n".encode("utf-8")))]
     assert (output_dir / "lib" / "main.py").read_text(encoding="utf-8") == "print('hi')\n"
+    assert not any(p.suffix == ".tmp" for p in (output_dir / "lib").iterdir())
 
 
 def test_write_output_files_rejects_absolute_paths(tmp_path: Path):

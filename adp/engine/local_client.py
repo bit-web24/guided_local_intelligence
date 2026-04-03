@@ -14,6 +14,7 @@ from adp.config import (
     LOCAL_TIMEOUT,
     OLLAMA_BASE_URL,
 )
+from adp.engine.call_stats import record_model_call
 
 
 async def call_local_async(
@@ -54,6 +55,7 @@ async def call_local_async(
             json=payload,
         )
         response.raise_for_status()
+        record_model_call(model_name)
         return response.json()["response"]
 
 
