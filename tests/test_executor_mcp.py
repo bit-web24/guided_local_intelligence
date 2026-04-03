@@ -83,6 +83,37 @@ async def test_mcp_result_injected_into_context():
 
 
 @pytest.mark.asyncio
+async def test_mcp_callbacks_report_tool_start_and_success():
+    task = _make_task(
+        mcp_tools=["read_file"],
+        mcp_tool_args={"read_file": {"path": "/tmp/main.py"}},
+    )
+    tool = _make_tool()
+    registry = _make_registry(tool)
+
+    mcp_manager = AsyncMock()
+    mcp_manager.call_tool.return_value = "def foo(): pass"
+
+    started: list[tuple[str, str]] = []
+    finished: list[tuple[str, str, bool, str | None]] = []
+
+    context = {}
+    await _prefetch_mcp_for_group(
+        [task],
+        context,
+        mcp_manager,
+        registry,
+        on_tool_start=lambda task, tool_name: started.append((task.id, tool_name)),
+        on_tool_done=lambda task, tool_name, ok, detail: finished.append(
+            (task.id, tool_name, ok, detail)
+        ),
+    )
+
+    assert started == [("t1", "read_file")]
+    assert finished == [("t1", "read_file", True, None)]
+
+
+@pytest.mark.asyncio
 async def test_mcp_failure_writes_error_notice():
     """
     A failing MCP tool call should not crash the pipeline.
@@ -103,6 +134,37 @@ async def test_mcp_failure_writes_error_notice():
 
     assert "t1_read_file_result" in context
     assert "failed" in context["t1_read_file_result"].lower()
+
+
+@pytest.mark.asyncio
+async def test_mcp_callbacks_report_tool_failure():
+    task = _make_task(
+        mcp_tools=["read_file"],
+        mcp_tool_args={"read_file": {"path": "/tmp/missing.py"}},
+    )
+    tool = _make_tool()
+    registry = _make_registry(tool)
+
+    mcp_manager = AsyncMock()
+    mcp_manager.call_tool.side_effect = Exception("File not found")
+
+    started: list[tuple[str, str]] = []
+    finished: list[tuple[str, str, bool, str | None]] = []
+
+    context = {}
+    await _prefetch_mcp_for_group(
+        [task],
+        context,
+        mcp_manager,
+        registry,
+        on_tool_start=lambda task, tool_name: started.append((task.id, tool_name)),
+        on_tool_done=lambda task, tool_name, ok, detail: finished.append(
+            (task.id, tool_name, ok, detail)
+        ),
+    )
+
+    assert started == [("t1", "read_file")]
+    assert finished == [("t1", "read_file", False, "File not found")]
 
 
 @pytest.mark.asyncio

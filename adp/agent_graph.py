@@ -155,6 +155,8 @@ async def _execute_node(state: AgentState) -> Command[Literal["assemble", "repla
         on_task_start=callbacks.on_task_start,
         on_task_done=callbacks.on_task_done,
         on_task_failed=callbacks.on_task_failed,
+        on_tool_start=getattr(callbacks, "on_tool_start", None),
+        on_tool_done=getattr(callbacks, "on_tool_done", None),
         mcp_manager=state["mcp_manager"],
         tool_registry=state["tool_registry"],
         initial_context=state.get("context", {}),

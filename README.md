@@ -77,6 +77,27 @@ uv run pytest tests/test_graph.py tests/test_validator.py tests/test_decomposer.
 uv run pytest -v
 ```
 
+## MCP Servers
+
+ADP can expose external tools to the decomposer and executor through `mcp_servers.toml`.
+This repo now includes a free web-search MCP server configuration that does not require an API key:
+
+```toml
+[[servers]]
+name      = "web_search"
+transport = "stdio"
+command   = "npx"
+args      = ["-y", "open-websearch@latest"]
+[servers.env]
+MODE = "stdio"
+DEFAULT_SEARCH_ENGINE = "startpage"
+ALLOWED_SEARCH_ENGINES = "startpage,duckduckgo"
+```
+
+This uses `open-websearch`, which supports no-key web search and content retrieval over MCP.
+It requires `node`/`npm` with `npx` available on the machine. `startpage` is set as the
+default because DuckDuckGo HTML search can return `403` for some environments.
+
 ## Architecture
 
 ```

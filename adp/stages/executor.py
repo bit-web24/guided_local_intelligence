@@ -59,6 +59,8 @@ async def _prefetch_mcp_for_group(
     context: ContextDict,
     mcp_manager: Any,
     tool_registry: Any,
+    on_tool_start: Callable[[MicroTask, str], None] | None = None,
+    on_tool_done: Callable[[MicroTask, str, bool, str | None], None] | None = None,
 ) -> None:
     """
     For each task in the group that has mcp_tools assigned, resolve args
@@ -91,17 +93,25 @@ async def _prefetch_mcp_for_group(
             # Task-scoped key — unique per (task, tool) pair
             context_key = f"{task.id}_{tool_name}_result"
             if tool_name not in tool_registry:
+                if on_tool_start is not None:
+                    on_tool_start(task, tool_name)
                 logger.warning(
                     f"Task '{task.id}' references unknown MCP tool '{tool_name}'. "
                     "Skipping."
                 )
                 context[context_key] = f"[MCP tool '{tool_name}' not found]"
+                if on_tool_done is not None:
+                    on_tool_done(task, tool_name, False, "not found")
                 continue
             try:
+                if on_tool_start is not None:
+                    on_tool_start(task, tool_name)
                 mcp_tool = tool_registry[tool_name]
                 args = resolve_tool_args(mcp_tool, task, context)
                 result = await mcp_manager.call_tool(tool_name, args)
                 context[context_key] = result
+                if on_tool_done is not None:
+                    on_tool_done(task, tool_name, True, None)
                 logger.debug(
                     f"MCP pre-fetch '{tool_name}' ({task.id}) → '{context_key}' "
                     f"({len(result)} chars)"
@@ -112,6 +122,8 @@ async def _prefetch_mcp_for_group(
                     "Injecting error notice."
                 )
                 context[context_key] = f"[MCP tool '{tool_name}' failed: {e}]"
+                if on_tool_done is not None:
+                    on_tool_done(task, tool_name, False, str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +220,8 @@ async def execute_plan(
     on_task_start: Callable[[MicroTask], None],
     on_task_done: Callable[[MicroTask], None],
     on_task_failed: Callable[[MicroTask], None],
+    on_tool_start: Callable[[MicroTask, str], None] | None = None,
+    on_tool_done: Callable[[MicroTask, str, bool, str | None], None] | None = None,
     mcp_manager: Any | None = None,
     tool_registry: Any | None = None,
     initial_context: ContextDict | None = None,
@@ -260,7 +274,12 @@ async def execute_plan(
             # Phase 1: MCP pre-fetch — MUST run in the main task
             if mcp_manager is not None and tool_registry is not None:
                 await _prefetch_mcp_for_group(
-                    runnable, context, mcp_manager, tool_registry
+                    runnable,
+                    context,
+                    mcp_manager,
+                    tool_registry,
+                    on_tool_start=on_tool_start,
+                    on_tool_done=on_tool_done,
                 )
 
             # Phase 2: Local model calls — safe to parallelise with gather

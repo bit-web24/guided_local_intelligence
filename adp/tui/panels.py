@@ -186,6 +186,29 @@ def render_activity(activity: list[str], error: str | None = None) -> Panel:
     )
 
 
+def render_tool_history(tool_history: list[str]) -> Panel:
+    """Lower-right companion panel listing MCP tools called so far."""
+    body = Text()
+    entries = list(reversed(tool_history[-12:]))
+
+    if not entries:
+        body.append("No MCP tools called yet.", style=th.COLOR_FOOTER)
+    else:
+        for index, entry in enumerate(entries):
+            style = th.COLOR_ERROR if "failed" in entry.lower() else th.COLOR_FOOTER
+            body.append(entry, style=style)
+            if index != len(entries) - 1:
+                body.append("\n")
+
+    return Panel(
+        body,
+        title="TOOLS USED",
+        title_align="left",
+        border_style=th.COLOR_BORDER,
+        padding=(0, 1),
+    )
+
+
 def render_output_files(filenames: list[str]) -> Panel:
     """Footer bar listing expected output filenames."""
     t = Text()

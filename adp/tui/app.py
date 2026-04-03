@@ -129,6 +129,7 @@ _render_state: dict = {
     "current_task": None,
     "streamed_output": "",
     "activity": [],
+    "tool_history": [],
     "stage": "IDLE",
     "written_files": [],
     "output_dir": "",
@@ -136,6 +137,9 @@ _render_state: dict = {
     "output_filenames": [],
     "error": None,
 }
+
+_MAX_ACTIVITY_ITEMS = 12
+_MAX_TOOL_HISTORY_ITEMS = 20
 
 
 def _update_state(**kwargs) -> None:
@@ -161,6 +165,8 @@ class TUICallbacks:
     on_task_start: Callable[[MicroTask], None]
     on_task_done: Callable[[MicroTask], None]
     on_task_failed: Callable[[MicroTask], None]
+    on_tool_start: Callable[[MicroTask, str], None]
+    on_tool_done: Callable[[MicroTask, str, bool, str | None], None]
     on_task_reflected: Callable[[MicroTask, ReflectionResult], None]
     on_complete: Callable[[list[tuple[str, int]], str, str | None], None]
     on_error: Callable[[str], None]
@@ -172,7 +178,13 @@ def make_tui_callbacks() -> TUICallbacks:
         with _state_lock:
             activity = list(_render_state.get("activity", []))
             activity.append(message)
-            _render_state["activity"] = activity[-4:]
+            _render_state["activity"] = activity[-_MAX_ACTIVITY_ITEMS:]
+
+    def append_tool_history(message: str) -> None:
+        with _state_lock:
+            tool_history = list(_render_state.get("tool_history", []))
+            tool_history.append(message)
+            _render_state["tool_history"] = tool_history[-_MAX_TOOL_HISTORY_ITEMS:]
 
     def on_stage(stage: str) -> None:
         _update_state(stage=stage)
@@ -205,6 +217,21 @@ def make_tui_callbacks() -> TUICallbacks:
             _render_state["tasks"] = list(_render_state["tasks"])
         append_activity(f"{task.id} failed: {task.error or 'failed'}")
 
+    def on_tool_start(task: MicroTask, tool_name: str) -> None:
+        message = f"{task.id} call: {tool_name}"
+        append_activity(f"[tool] {message}")
+        append_tool_history(message)
+
+    def on_tool_done(task: MicroTask, tool_name: str, ok: bool, detail: str | None) -> None:
+        if ok:
+            message = f"{task.id} done: {tool_name}"
+            append_activity(f"[tool] {message}")
+            append_tool_history(message)
+        else:
+            message = f"{task.id} failed: {tool_name} ({detail or 'failed'})"
+            append_activity(f"[tool] {message}")
+            append_tool_history(message)
+
     def on_task_reflected(task: MicroTask, result: ReflectionResult) -> None:
         verdict = "PASS" if result.passed else f"FAIL — {result.reason}"
         cloud_tag = " [cloud]" if result.used_cloud else ""
@@ -230,6 +257,8 @@ def make_tui_callbacks() -> TUICallbacks:
         on_task_start=on_task_start,
         on_task_done=on_task_done,
         on_task_failed=on_task_failed,
+        on_tool_start=on_tool_start,
+        on_tool_done=on_tool_done,
         on_task_reflected=on_task_reflected,
         on_complete=on_complete,
         on_error=on_error,
@@ -259,6 +288,15 @@ def make_plain_callbacks() -> TUICallbacks:
         icon = "✗" if task.status == TaskStatus.FAILED else "–"
         console.print(f"  [red]{icon} {task.id}[/] {task.error or 'failed'}")
 
+    def on_tool_start(task: MicroTask, tool_name: str) -> None:
+        console.print(f"  [cyan]↺ tool[/] {task.id} → {tool_name}")
+
+    def on_tool_done(task: MicroTask, tool_name: str, ok: bool, detail: str | None) -> None:
+        if ok:
+            console.print(f"  [green]✓ tool[/] {task.id} → {tool_name}")
+        else:
+            console.print(f"  [red]✗ tool[/] {task.id} → {tool_name}: {detail or 'failed'}")
+
     def on_task_reflected(task: MicroTask, result: ReflectionResult) -> None:
         if result.passed:
             console.print(f"  [green]◉ {task.id}[/] reflected: PASS")
@@ -285,6 +323,8 @@ def make_plain_callbacks() -> TUICallbacks:
         on_task_start=on_task_start,
         on_task_done=on_task_done,
         on_task_failed=on_task_failed,
+        on_tool_start=on_tool_start,
+        on_tool_done=on_tool_done,
         on_task_reflected=on_task_reflected,
         on_complete=on_complete,
         on_error=on_error,
@@ -308,8 +348,12 @@ def _build_layout(state: dict) -> Layout:
         Layout(name="current", ratio=3),
     )
     layout["current"].split_column(
-        Layout(name="current_task", ratio=3),
-        Layout(name="activity", ratio=2),
+        Layout(name="current_task", ratio=2),
+        Layout(name="lower", ratio=3),
+    )
+    layout["lower"].split_row(
+        Layout(name="activity", ratio=3),
+        Layout(name="tools", ratio=2),
     )
 
     layout["header"].update(
@@ -326,6 +370,9 @@ def _build_layout(state: dict) -> Layout:
     )
     layout["activity"].update(
         panels.render_activity(state["activity"], state.get("error"))
+    )
+    layout["tools"].update(
+        panels.render_tool_history(state.get("tool_history", []))
     )
     if state["output_filenames"]:
         layout["files"].update(panels.render_output_files(state["output_filenames"]))
@@ -356,6 +403,7 @@ def run_with_live(
         current_task=None,
         streamed_output="",
         activity=[],
+        tool_history=[],
         stage="IDLE",
         written_files=[],
         output_dir=output_dir,
