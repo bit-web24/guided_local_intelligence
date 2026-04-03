@@ -26,7 +26,7 @@ import re
 from typing import Any, Callable
 
 from adp.config import (
-    LOCAL_GENERAL_MODEL,
+    get_model_config,
     MAX_PARALLEL,
     REFLECT_CLOUD_DEP_THRESHOLD,
 )
@@ -199,11 +199,12 @@ async def reflect_task(
                 max_tokens=256,
             )
         else:
+            models = get_model_config()
             raw = await call_local_async(
                 system_prompt=prompt,
                 input_text="Evaluate this output.",
                 anchor_str="Verdict:",
-                model_name=LOCAL_GENERAL_MODEL,
+                model_name=models.local_general,
                 temperature_override=0.0,
             )
     except Exception as e:
@@ -282,4 +283,3 @@ def reflection_failure_summary(results: list[ReflectionResult]) -> str:
         return "All reflections passed."
     lines = [f"  {r.task_id}: FAIL — {r.reason}" for r in failures]
     return f"Reflection found {len(failures)} issue(s):\n" + "\n".join(lines)
-

@@ -28,7 +28,7 @@ import logging
 from typing import Any, Callable
 
 from adp.config import (
-    LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL, MAX_PARALLEL, MAX_RETRIES,
+    get_model_config, MAX_PARALLEL, MAX_RETRIES,
     RETRY_INJECT_ERROR, RETRY_TEMPERATURE_STEP,
 )
 from adp.engine.graph import build_execution_groups
@@ -147,7 +147,8 @@ async def execute_task(
     task.status = TaskStatus.RUNNING
     on_start(task)
 
-    model_name = LOCAL_CODER_MODEL if task.model_type == "coder" else LOCAL_GENERAL_MODEL
+    models = get_model_config()
+    model_name = models.local_coder if task.model_type == "coder" else models.local_general
     last_validation_error: str | None = None
 
     for attempt in range(MAX_RETRIES):

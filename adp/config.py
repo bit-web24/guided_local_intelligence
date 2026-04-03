@@ -1,16 +1,59 @@
-"""ADP configuration — all settings from environment variables."""
+"""ADP configuration — runtime settings and model selection."""
 import os
+from dataclasses import dataclass
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
+
+@dataclass(frozen=True)
+class ModelConfig:
+    """Runtime-resolved model names for the pipeline."""
+
+    cloud: str
+    local_coder: str
+    local_general: str
+
+
 # ---------------------------------------------------------------------------
 # Models — both served via Ollama
 # ---------------------------------------------------------------------------
-CLOUD_MODEL = os.getenv("CLOUD_MODEL", "gpt-oss:120b-cloud")     # large: decompose + assemble
-LOCAL_CODER_MODEL = os.getenv("LOCAL_CODER_MODEL", "qwen2.5-coder:1.5b")  # small: logic/coding tasks
-LOCAL_GENERAL_MODEL = os.getenv("LOCAL_GENERAL_MODEL", "qwen2.5:1.5b")    # small: text/extraction tasks
+DEFAULT_CLOUD_MODEL = "gpt-oss:120b-cloud"      # large: decompose + assemble
+DEFAULT_LOCAL_CODER_MODEL = "qwen2.5-coder:1.5b"  # small: logic/coding tasks
+DEFAULT_LOCAL_GENERAL_MODEL = "qwen2.5:1.5b"      # small: text/extraction tasks
 OLLAMA_BASE_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+
+
+def get_model_config() -> ModelConfig:
+    """Resolve the active model set from environment variables at runtime."""
+    return ModelConfig(
+        cloud=os.getenv("CLOUD_MODEL", DEFAULT_CLOUD_MODEL),
+        local_coder=os.getenv("LOCAL_CODER_MODEL", DEFAULT_LOCAL_CODER_MODEL),
+        local_general=os.getenv("LOCAL_GENERAL_MODEL", DEFAULT_LOCAL_GENERAL_MODEL),
+    )
+
+
+def set_model_config(
+    *,
+    cloud: str | None = None,
+    local_coder: str | None = None,
+    local_general: str | None = None,
+    local: str | None = None,
+) -> ModelConfig:
+    """Apply model overrides globally for the current process."""
+    if local is not None:
+        local_coder = local_coder or local
+        local_general = local_general or local
+
+    if cloud is not None:
+        os.environ["CLOUD_MODEL"] = cloud
+    if local_coder is not None:
+        os.environ["LOCAL_CODER_MODEL"] = local_coder
+    if local_general is not None:
+        os.environ["LOCAL_GENERAL_MODEL"] = local_general
+
+    return get_model_config()
 
 # ---------------------------------------------------------------------------
 # Execution

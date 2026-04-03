@@ -13,7 +13,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.markdown import Markdown
 
-from adp.config import CLOUD_MODEL, LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL
+from adp.config import get_model_config
 from adp.models.task import MicroTask, TaskStatus
 from adp.tui import themes as th
 
@@ -31,6 +31,7 @@ def _status_icon(status: TaskStatus) -> tuple[str, str]:
 
 def render_header(stage: str, ollama_ok: bool) -> Panel:
     """Top header bar showing model names, stage, and Ollama connection status."""
+    models = get_model_config()
     conn_icon = "●" if ollama_ok else "○"
     conn_color = "bold green" if ollama_ok else "bold red"
     conn_label = "Ollama connected" if ollama_ok else "Ollama disconnected"
@@ -40,10 +41,10 @@ def render_header(stage: str, ollama_ok: bool) -> Panel:
     t.append(f"{th.APP_SUBTITLE}", style=th.COLOR_TITLE)
     t.append("    ")
     t.append(f"cloud: ", style=th.COLOR_FOOTER)
-    t.append(CLOUD_MODEL, style=th.COLOR_CLOUD)
+    t.append(models.cloud, style=th.COLOR_CLOUD)
     t.append("   ")
     t.append(f"local: ", style=th.COLOR_FOOTER)
-    t.append(f"{LOCAL_CODER_MODEL} | {LOCAL_GENERAL_MODEL}", style=th.COLOR_LOCAL)
+    t.append(f"{models.local_coder} | {models.local_general}", style=th.COLOR_LOCAL)
     t.append("   ")
     t.append(f"{conn_icon} {conn_label}", style=conn_color)
 

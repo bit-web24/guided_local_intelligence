@@ -9,7 +9,7 @@ from __future__ import annotations
 import httpx
 
 from adp.config import (
-    CLOUD_MODEL,
+    get_model_config,
     CLOUD_TEMPERATURE,
     CLOUD_TIMEOUT,
     OLLAMA_BASE_URL,
@@ -30,8 +30,9 @@ async def call_cloud_async(
 
     Returns the raw response string from the model.
     """
+    model_config = get_model_config()
     payload = {
-        "model": CLOUD_MODEL,
+        "model": model_config.cloud,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
@@ -62,8 +63,9 @@ async def call_cloud_with_history(
 
     messages format: [{"role": "system"|"user"|"assistant", "content": "..."}]
     """
+    model_config = get_model_config()
     payload = {
-        "model": CLOUD_MODEL,
+        "model": model_config.cloud,
         "messages": messages,
         "stream": False,
         "options": {

@@ -8,7 +8,10 @@ Arguments:
 
 Options:
     --output  -o  PATH   Output directory  [default: ./adp_output]
-    --model   -m  TEXT   Override local Ollama model
+    --model   -m  TEXT   Override both local Ollama models
+    --cloud-model TEXT   Override the cloud/planner model
+    --coder-model TEXT   Override the local coder model
+    --general-model TEXT Override the local general model
     --no-tui             Plain text output (for scripting/CI)
     --debug              Print all system prompts and raw outputs
     --version            Show version and exit
@@ -17,13 +20,12 @@ Options:
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from functools import partial
 from typing import Callable
 
 from adp.agent_graph import run_agent_graph
-from adp.config import DEFAULT_OUTPUT_DIR, LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL, CLOUD_MODEL
+from adp.config import DEFAULT_OUTPUT_DIR, get_model_config, set_model_config
 from adp.engine.local_client import check_ollama_connection
 from adp.models.task import PipelineResult
 from adp.tui.app import TUICallbacks, interactive_loop, make_plain_callbacks, run_with_live
@@ -120,7 +122,25 @@ def _build_parser() -> argparse.ArgumentParser:
         "--model", "-m",
         default=None,
         metavar="MODEL",
-        help="Override local Ollama models (overrides env vars)",
+        help="Override both local Ollama models (overrides env vars)",
+    )
+    parser.add_argument(
+        "--cloud-model",
+        default=None,
+        metavar="MODEL",
+        help="Override the cloud/planner model",
+    )
+    parser.add_argument(
+        "--coder-model",
+        default=None,
+        metavar="MODEL",
+        help="Override the local coder model",
+    )
+    parser.add_argument(
+        "--general-model",
+        default=None,
+        metavar="MODEL",
+        help="Override the local general model",
     )
     parser.add_argument(
         "--no-tui",
@@ -150,10 +170,13 @@ def cli() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    # Apply model override if given
-    if args.model:
-        os.environ["LOCAL_CODER_MODEL"] = args.model
-        os.environ["LOCAL_GENERAL_MODEL"] = args.model
+    set_model_config(
+        cloud=args.cloud_model,
+        local=args.model,
+        local_coder=args.coder_model,
+        local_general=args.general_model,
+    )
+    models = get_model_config()
 
     output_dir: str = args.output
     no_tui: bool = args.no_tui
@@ -181,7 +204,8 @@ def cli() -> None:
         ollama_ok = check_ollama()
         if not ollama_ok:
             print(
-                f"Warning: One or both local models not found. "
+                f"Warning: One or both local models not found "
+                f"({models.local_coder}, {models.local_general}). "
                 "Proceeding — calls may fail.",
                 file=sys.stderr,
             )

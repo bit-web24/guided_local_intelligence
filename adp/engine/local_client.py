@@ -9,8 +9,7 @@ import asyncio
 import httpx
 
 from adp.config import (
-    LOCAL_CODER_MODEL,
-    LOCAL_GENERAL_MODEL,
+    get_model_config,
     LOCAL_TEMPERATURE,
     LOCAL_TIMEOUT,
     OLLAMA_BASE_URL,
@@ -72,7 +71,8 @@ async def check_ollama_connection() -> bool:
     """
     Returns True if Ollama is reachable and both required local models are available.
     """
-    required_models = {LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL}
+    models = get_model_config()
+    required_models = {models.local_coder, models.local_general}
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             response = await client.get(f"{OLLAMA_BASE_URL}/api/tags")

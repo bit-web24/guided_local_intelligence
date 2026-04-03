@@ -6,7 +6,7 @@ by running a 3-stage pipeline entirely through **Ollama** — no external API ke
 ## How It Works
 
 1. **Decompose** — A large Ollama model (`gpt-oss:120b-cloud`) breaks your prompt into atomic micro-tasks, file paths, and implementation contracts with a dependency graph and few-shot examples
-2. **Execute** — A small Ollama model (`qwen2.5-coder:7b`) writes the actual code locally, one tiny task at a time, with outputs injected into downstream task prompts
+2. **Execute** — Small Ollama models write the actual code locally, one tiny task at a time, with outputs injected into downstream task prompts
 3. **Assemble** — The large model stitches those local outputs into complete, production-ready files without inventing new logic
 
 ## Setup
@@ -38,9 +38,20 @@ uv run adp "Create a FastAPI orders API with 5 endpoints"
 # With options
 uv run adp --output ./my_project --debug "Write pytest tests for this module"
 
+# Mix and match planner/coder/general models
+uv run adp \
+  --cloud-model gpt-oss:120b-cloud \
+  --coder-model qwen2.5-coder:7b \
+  --general-model qwen2.5:7b \
+  "Refactor this package into a CLI"
+
 # Plain output (no TUI — for CI/scripting)
 uv run adp --no-tui "Generate a pyproject.toml for a Python CLI tool"
 ```
+
+Model names now live in [adp/config.py](/home/bittu/Desktop/guided_local_intelligence/adp/config.py).
+Defaults are defined there, and you can override them per run with CLI flags or env vars:
+`CLOUD_MODEL`, `LOCAL_CODER_MODEL`, `LOCAL_GENERAL_MODEL`.
 
 ## CLI Options
 
@@ -48,7 +59,10 @@ uv run adp --no-tui "Generate a pyproject.toml for a Python CLI tool"
 |---|---|
 | `PROMPT` | Task prompt (omit for interactive TUI mode) |
 | `--output`, `-o` | Output directory (default: `./adp_output`) |
-| `--model`, `-m` | Override local Ollama model |
+| `--model`, `-m` | Override both local Ollama models |
+| `--cloud-model` | Override the cloud/planner model |
+| `--coder-model` | Override the local coder model |
+| `--general-model` | Override the local general model |
 | `--no-tui` | Plain text output (for scripting/CI) |
 | `--debug` | Print all system prompts and raw outputs |
 | `--version` | Show version |
