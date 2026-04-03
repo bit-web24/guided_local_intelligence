@@ -6,9 +6,11 @@ from pathlib import Path
 import pytest
 
 from adp.engine.final_verifier import (
+    FINAL_PROMPT_VERIFIER_PROMPT,
     OutputVerificationError,
     verify_assembly_inputs,
     verify_execution_succeeded,
+    verify_files_match_user_prompt,
     verify_final_outputs,
     verify_written_outputs,
 )
@@ -135,3 +137,38 @@ def test_verify_written_outputs_rejects_mismatched_disk_content(tmp_path: Path):
 
     with pytest.raises(OutputVerificationError, match="does not match"):
         verify_written_outputs(plan, {"app.py": "def main():\n    return 1\n"}, str(output_dir))
+
+
+@pytest.mark.asyncio
+async def test_verify_files_match_user_prompt_accepts_pass():
+    plan = _make_plan()
+
+    with pytest.MonkeyPatch.context() as mp:
+        async def _mock_call(**kwargs):
+            assert "User request:" in kwargs["user_message"]
+            assert "Files:" in kwargs["user_message"]
+            return "PASS"
+
+        mp.setattr("adp.engine.final_verifier.call_cloud_async", _mock_call)
+        await verify_files_match_user_prompt(
+            "Create a tiny app",
+            plan,
+            {"app.py": "def main():\n    return 1\n"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_verify_files_match_user_prompt_rejects_fail_verdict():
+    plan = _make_plan()
+
+    with pytest.MonkeyPatch.context() as mp:
+        async def _mock_call(**kwargs):
+            return "FAIL — file does not implement the requested behavior"
+
+        mp.setattr("adp.engine.final_verifier.call_cloud_async", _mock_call)
+        with pytest.raises(OutputVerificationError, match="do not satisfy the original prompt"):
+            await verify_files_match_user_prompt(
+                "Create a tiny app",
+                plan,
+                {"app.py": "def main():\n    return 1\n"},
+            )

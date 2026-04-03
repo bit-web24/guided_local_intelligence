@@ -17,6 +17,7 @@ from adp.engine.final_verifier import (
     OutputVerificationError,
     verify_assembly_inputs,
     verify_execution_succeeded,
+    verify_files_match_user_prompt,
     verify_final_outputs,
     verify_written_outputs,
 )
@@ -331,6 +332,25 @@ async def _finalize_node(state: AgentState) -> Command[Literal["replan", "fail",
                     )
     else:
         stdout_text = files.get("__stdout__", "Error: No text output returned.")
+
+    callbacks.on_stage("PROMPT_VERIFY")
+    try:
+        await verify_files_match_user_prompt(
+            state["user_prompt"],
+            plan,
+            files,
+        )
+    except OutputVerificationError as exc:
+        prompt_error = str(exc)
+        if state.get("replan_count", 0) < state.get("max_replans", MAX_REPLANS):
+            return Command(
+                update={"files": files, "last_error": prompt_error, "status": "replanning"},
+                goto="replan",
+            )
+        return Command(
+            update={"last_error": prompt_error, "status": "failed"},
+            goto="fail",
+        )
 
     write_execution_log(state["user_prompt"], plan, state["output_dir"])
     write_success_artifact(

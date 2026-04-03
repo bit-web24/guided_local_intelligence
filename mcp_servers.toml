@@ -18,7 +18,7 @@
 name    = "filesystem"
 transport = "stdio"
 command = "npx"
-args    = ["-y", "@modelcontextprotocol/server-filesystem", "/home/bittu/Desktop/tmp"]
+args    = ["-y", "@modelcontextprotocol/server-filesystem", "/home/bittu/Desktop/guided_local_intelligence/adp_output"]
 
 # --- Git server (log, diff, show) ---
 # [[servers]]

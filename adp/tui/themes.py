@@ -57,6 +57,7 @@ STAGE_LABELS = {
     "ASSEMBLING":  "Assembling files…",
     "WRITING":     "Writing to disk…",
     "FINAL_VERIFY":"Verifying written files…",
+    "PROMPT_VERIFY":"Checking against prompt…",
     "DONE":        "Complete ✓",
     "ERROR":       "Error ✗",
 }

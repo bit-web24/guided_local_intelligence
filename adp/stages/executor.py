@@ -187,6 +187,7 @@ async def execute_task(
                 anchor_str=task.anchor.value,
                 model_name=model_name,
                 temperature_override=temp_override,
+                stage_name=f"executor:{task.model_type}",
             )
             extracted = extract_after_anchor(raw, task.anchor)
             is_valid, cleaned = validate(extracted, task.anchor)

@@ -5,11 +5,32 @@ import ast
 import json
 from pathlib import Path
 
+from adp.engine.cloud_client import call_cloud_async
 from adp.models.task import ContextDict, TaskPlan, TaskStatus
 
 
 class OutputVerificationError(ValueError):
     """Raised when assembled output cannot be trusted as structurally correct."""
+
+
+FINAL_PROMPT_VERIFIER_PROMPT = """\
+You are a strict final-output verifier.
+You receive the original user request and the final files produced by the pipeline.
+Determine whether the files actually satisfy the user's request.
+
+Rules:
+1. Reply ONLY with "PASS" or "FAIL — <one-line reason>".
+2. PASS only if the files materially satisfy the request.
+3. FAIL if files are missing key requested behavior, clearly off-topic, or contradict the request.
+4. Be strict but practical. Minor style differences are acceptable.
+
+User request:
+{user_prompt}
+
+Files:
+{files_text}
+
+Verdict:"""
 
 
 def verify_execution_succeeded(plan: TaskPlan) -> None:
@@ -81,6 +102,47 @@ def verify_written_outputs(plan: TaskPlan, files: dict[str, str], output_dir: st
                 f"Written file '{filename}' is empty on disk."
             )
         _verify_by_extension(filename, disk_content)
+
+
+async def verify_files_match_user_prompt(
+    user_prompt: str,
+    plan: TaskPlan,
+    files: dict[str, str],
+) -> None:
+    """Use the cloud verifier to check final files against the original prompt."""
+    if not plan.write_to_file or not files:
+        return
+
+    files_text_parts: list[str] = []
+    for filename in plan.output_filenames:
+        files_text_parts.append(f"--- FILE: {filename} ---")
+        files_text_parts.append(files.get(filename, "[MISSING]"))
+        files_text_parts.append("--- END FILE ---")
+        files_text_parts.append("")
+
+    prompt = (
+        FINAL_PROMPT_VERIFIER_PROMPT
+        .replace("{user_prompt}", user_prompt)
+        .replace("{files_text}", "\n".join(files_text_parts))
+    )
+
+    raw = await call_cloud_async(
+        system_prompt="",
+        user_message=prompt,
+        temperature=0.0,
+        max_tokens=512,
+        stage_name="final_prompt_verify",
+    )
+    verdict = raw.strip()
+    if verdict.upper().startswith("PASS"):
+        return
+    if verdict.upper().startswith("FAIL"):
+        raise OutputVerificationError(
+            f"Final files do not satisfy the original prompt: {verdict}"
+        )
+    raise OutputVerificationError(
+        f"Prompt verification returned an ambiguous verdict: {verdict[:200]}"
+    )
 
 
 def _verify_output_files(plan: TaskPlan, files: dict[str, str]) -> None:

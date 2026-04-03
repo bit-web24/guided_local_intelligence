@@ -239,6 +239,7 @@ def render_completion_summary(
     written: list[tuple[str, int]],
     output_dir: str,
     model_call_counts: dict[str, int] | None = None,
+    stage_model_call_counts: dict[str, dict[str, int]] | None = None,
 ) -> Panel:
     """Completion panel shown after all files are written."""
     table = Table.grid(padding=(0, 2))
@@ -253,6 +254,12 @@ def render_completion_summary(
     t = Text()
     t.append(f"\nAll files written to: ", style=th.COLOR_FOOTER)
     t.append(output_dir, style=th.COLOR_FILE)
+
+    if stage_model_call_counts:
+        t.append("\n\nStage model usage:\n", style=th.COLOR_TITLE)
+        for stage_name, model_counts in stage_model_call_counts.items():
+            pairs = ", ".join(f"{model_name} ({count})" for model_name, count in model_counts.items())
+            t.append(f"  {stage_name}: {pairs}\n", style=th.COLOR_FOOTER)
 
     if model_call_counts:
         t.append("\n\nLLM calls:\n", style=th.COLOR_TITLE)
@@ -279,9 +286,18 @@ def render_text_response(text: str) -> Panel:
     )
 
 
-def render_model_call_summary(model_call_counts: dict[str, int]) -> Text:
-    """Render per-model call counts for plain-text completion output."""
+def render_model_call_summary(
+    model_call_counts: dict[str, int],
+    stage_model_call_counts: dict[str, dict[str, int]] | None = None,
+) -> Text:
+    """Render per-model and per-stage call counts for plain-text completion output."""
     t = Text()
+    if stage_model_call_counts:
+        t.append("Stage model usage\n", style=th.COLOR_TITLE)
+        for stage_name, model_counts in stage_model_call_counts.items():
+            pairs = ", ".join(f"{model_name} ({count})" for model_name, count in model_counts.items())
+            t.append(f"{stage_name}: {pairs}\n", style=th.COLOR_FOOTER)
+        t.append("\n", style=th.COLOR_FOOTER)
     t.append("LLM calls\n", style=th.COLOR_TITLE)
     if not model_call_counts:
         t.append("No model calls recorded.", style=th.COLOR_FOOTER)

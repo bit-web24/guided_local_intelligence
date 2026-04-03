@@ -22,6 +22,7 @@ async def call_cloud_async(
     user_message: str,
     temperature: float = CLOUD_TEMPERATURE,
     max_tokens: int = 8192,
+    stage_name: str = "cloud",
 ) -> str:
     """
     Call the large Ollama model asynchronously.
@@ -50,7 +51,7 @@ async def call_cloud_async(
             json=payload,
         )
         response.raise_for_status()
-        record_model_call(model_config.cloud)
+        record_model_call(model_config.cloud, stage_name=stage_name)
         data = response.json()
         return data["message"]["content"]
 
@@ -59,6 +60,7 @@ async def call_cloud_with_history(
     messages: list[dict],
     temperature: float = CLOUD_TEMPERATURE,
     max_tokens: int = 8192,
+    stage_name: str = "cloud",
 ) -> str:
     """
     Call the large model with a full message history (for retry/self-correction).
@@ -81,6 +83,6 @@ async def call_cloud_with_history(
             json=payload,
         )
         response.raise_for_status()
-        record_model_call(model_config.cloud)
+        record_model_call(model_config.cloud, stage_name=stage_name)
         data = response.json()
         return data["message"]["content"]

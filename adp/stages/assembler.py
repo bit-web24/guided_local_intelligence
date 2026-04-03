@@ -105,6 +105,7 @@ async def assemble(
         user_message=sys_prompt,
         temperature=0.0,
         max_tokens=16384,
+        stage_name="assembler",
     )
 
     if not plan.write_to_file:

@@ -23,6 +23,7 @@ async def call_local_async(
     anchor_str: str,
     model_name: str,
     temperature_override: float | None = None,
+    stage_name: str = "local",
 ) -> str:
     """
     Call the small Ollama model asynchronously.
@@ -55,7 +56,7 @@ async def call_local_async(
             json=payload,
         )
         response.raise_for_status()
-        record_model_call(model_name)
+        record_model_call(model_name, stage_name=stage_name)
         return response.json()["response"]
 
 

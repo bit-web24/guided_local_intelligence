@@ -83,6 +83,7 @@ async def test_graph_replans_after_failed_execution(tmp_path):
          patch("adp.agent_graph.replan", AsyncMock(return_value=second_plan)) as replan_mock, \
          patch("adp.agent_graph.execute_plan", AsyncMock(side_effect=execute_side_effect)), \
          patch("adp.agent_graph.reflect_plan", AsyncMock(return_value=[])), \
+         patch("adp.agent_graph.verify_files_match_user_prompt", AsyncMock(return_value=None)), \
          patch("adp.agent_graph.assemble", AsyncMock(return_value={"__stdout__": "done"})):
         result = await run_agent_graph(
             user_prompt="Say hello",
@@ -151,6 +152,7 @@ async def test_graph_resumes_from_persisted_run_state(tmp_path):
 
     with patch("adp.agent_graph.execute_plan", AsyncMock(side_effect=execute_side_effect)) as execute_mock, \
          patch("adp.agent_graph.reflect_plan", AsyncMock(return_value=[])), \
+         patch("adp.agent_graph.verify_files_match_user_prompt", AsyncMock(return_value=None)), \
          patch("adp.agent_graph.assemble", AsyncMock(return_value={"__stdout__": "done"})):
         result = await run_agent_graph(
             user_prompt="",

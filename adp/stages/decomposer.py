@@ -336,6 +336,7 @@ async def decompose(
             messages=messages,
             temperature=CLOUD_TEMPERATURE,
             max_tokens=8192,
+            stage_name="decomposer",
         )
         # Strip any accidental markdown fences
         clean = re.sub(r"```json\s*|\s*```", "", raw).strip()

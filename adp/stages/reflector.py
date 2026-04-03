@@ -197,6 +197,7 @@ async def reflect_task(
                 user_message="Evaluate this output.",
                 temperature=0.0,
                 max_tokens=256,
+                stage_name="reflector:cloud",
             )
         else:
             models = get_model_config()
@@ -206,6 +207,7 @@ async def reflect_task(
                 anchor_str="Verdict:",
                 model_name=models.local_general,
                 temperature_override=0.0,
+                stage_name="reflector:local",
             )
     except Exception as e:
         logger.warning(f"Reflection call failed for {task.id}: {e}")
