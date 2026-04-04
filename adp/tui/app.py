@@ -194,7 +194,6 @@ def make_tui_callbacks() -> TUICallbacks:
     def on_plan_ready(plan: TaskPlan) -> None:
         _update_state(
             tasks=list(plan.tasks),
-            output_filenames=list(plan.output_filenames),
         )
         append_activity(f"Plan ready: {len(plan.tasks)} tasks")
 
@@ -244,6 +243,7 @@ def make_tui_callbacks() -> TUICallbacks:
             written_files=written,
             output_dir=output_dir,
             stdout_text=stdout_text,
+            output_filenames=[filename for filename, _size in written],
         )
         append_activity("Pipeline complete")
 

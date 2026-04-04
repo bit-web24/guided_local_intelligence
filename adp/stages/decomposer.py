@@ -293,6 +293,19 @@ JSON fields to add to the task when using MCP tools:
   "mcp_tool_args": {{"read_text_file": {{"path": "{project_dir}/pyproject.toml"}}}}
 """
 
+_CONFIG_VALUE_TOKENS = {
+    "port",
+    "listen_port",
+    "host",
+    "hostname",
+    "base_url",
+    "url",
+    "api_key",
+    "token",
+    "database_url",
+    "db_url",
+}
+
 
 class DecompositionError(Exception):
     """Raised when the large model returns malformed JSON or a plan that fails validation."""
@@ -548,6 +561,22 @@ def _repair_task_plan(plan: TaskPlan) -> TaskPlan:
         if missing_dep_keys:
             template = _inject_dependency_context(template, missing_dep_keys)
 
+        # 4) Rewrite safe config-like unknown placeholders to the matching
+        #    dependency output_key when the match is unique.
+        placeholders = set(_TEMPLATE_PLACEHOLDER_RE.findall(template))
+        expected_dep_keys = {
+            task_map[dep_id].output_key
+            for dep_id in task.depends_on
+            if dep_id in task_map
+        }
+        expected_tool_keys = {f"{task.id}_{tool_name}_result" for tool_name in task.mcp_tools}
+        allowed_placeholders = {"input_text"} | expected_dep_keys | expected_tool_keys
+        unknown_placeholders = sorted(placeholders - allowed_placeholders)
+        for placeholder in unknown_placeholders:
+            resolved_dep_key = _resolve_config_like_placeholder(placeholder, expected_dep_keys)
+            if resolved_dep_key is not None:
+                template = template.replace(f"{{{placeholder}}}", f"{{{resolved_dep_key}}}")
+
         repaired_tasks.append(replace(task, system_prompt_template=template))
 
     return TaskPlan(
@@ -578,6 +607,45 @@ def _inject_dependency_context(template: str, output_keys: list[str]) -> str:
         )
 
     return template
+
+
+def _resolve_config_like_placeholder(
+    placeholder: str,
+    expected_dep_keys: set[str],
+) -> str | None:
+    normalized = _normalize_placeholder_name(placeholder)
+    if normalized not in _CONFIG_VALUE_TOKENS and not any(
+        token in normalized for token in ("port", "host", "url", "token", "key")
+    ):
+        return None
+
+    matches = [
+        dep_key
+        for dep_key in expected_dep_keys
+        if _placeholder_matches_output_key(normalized, dep_key)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _normalize_placeholder_name(value: str) -> str:
+    snake = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value)
+    snake = re.sub(r"[^a-zA-Z0-9]+", "_", snake)
+    return snake.strip("_").lower()
+
+
+def _placeholder_matches_output_key(normalized_placeholder: str, output_key: str) -> bool:
+    normalized_output = _normalize_placeholder_name(output_key)
+    if normalized_placeholder == normalized_output:
+        return True
+    if normalized_placeholder in normalized_output.split("_"):
+        return True
+    if normalized_output.endswith(f"_{normalized_placeholder}"):
+        return True
+    if normalized_placeholder.endswith(f"_{normalized_output}"):
+        return True
+    return False
 
 
 def _parse_task_plan(

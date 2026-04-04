@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from adp.models.task import AnchorType, MicroTask, TaskPlan, TaskStatus
-from adp.writer import write_output_files, write_success_artifact
+from adp.writer import build_execution_log_text, build_success_artifact, write_output_files, write_output_files_via_mcp, write_success_artifact
 
 
 def test_write_output_files_writes_relative_paths_under_output_dir(tmp_path: Path):
@@ -34,6 +34,29 @@ def test_write_output_files_rejects_parent_directory_escape(tmp_path: Path):
 
     with pytest.raises(ValueError, match="relative paths"):
         write_output_files({"../main.py": "print('hi')\n"}, str(output_dir))
+
+
+@pytest.mark.asyncio
+async def test_write_output_files_via_mcp_calls_filesystem_tools(tmp_path: Path):
+    calls = []
+
+    class _MCP:
+        async def call_tool(self, tool_name, arguments):
+            calls.append((tool_name, arguments))
+            return "ok"
+
+    output_dir = tmp_path / "out"
+    written = await write_output_files_via_mcp(
+        {"lib/main.py": "print('hi')\n"},
+        str(output_dir),
+        _MCP(),
+    )
+
+    assert written == [("lib/main.py", len("print('hi')\n".encode("utf-8")))]
+    assert calls[0][0] == "create_directory"
+    assert calls[1][0] == "write_file"
+    assert calls[1][1]["path"].endswith("lib/main.py")
+    assert calls[1][1]["content"] == "print('hi')\n"
 
 
 def test_write_success_artifact_contains_tasks_prompts_and_generated_files(tmp_path: Path):
@@ -92,3 +115,13 @@ def test_write_success_artifact_contains_tasks_prompts_and_generated_files(tmp_p
     assert data["tasks"][0]["system_prompt_template"].endswith("Code:")
     assert "GET / returns {'message': 'Hello'}" in data["tasks"][0]["rendered_system_prompt"]
     assert data["tasks"][0]["output"] == "def hello():\n    return {'message': 'Hello'}"
+
+
+def test_build_helpers_return_text_without_writing(tmp_path: Path):
+    plan = TaskPlan(tasks=[], final_output_keys=[], output_filenames=[], write_to_file=False)
+    log_text = build_execution_log_text("Do the thing", plan)
+    artifact_name, artifact_text = build_success_artifact("Do the thing", plan, {}, {})
+
+    assert "# ADP Execution Log" in log_text
+    assert artifact_name.startswith("adp_run_")
+    assert '"user_prompt": "Do the thing"' in artifact_text

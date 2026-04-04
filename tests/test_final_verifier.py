@@ -145,11 +145,11 @@ async def test_verify_files_match_user_prompt_accepts_pass():
 
     with pytest.MonkeyPatch.context() as mp:
         async def _mock_call(**kwargs):
-            assert "User request:" in kwargs["user_message"]
-            assert "Files:" in kwargs["user_message"]
+            assert "User request:" in kwargs["system_prompt"]
+            assert "Files:" in kwargs["system_prompt"]
             return "PASS"
 
-        mp.setattr("adp.engine.final_verifier.call_cloud_async", _mock_call)
+        mp.setattr("adp.engine.final_verifier.call_local_async", _mock_call)
         await verify_files_match_user_prompt(
             "Create a tiny app",
             plan,
@@ -165,7 +165,7 @@ async def test_verify_files_match_user_prompt_rejects_fail_verdict():
         async def _mock_call(**kwargs):
             return "FAIL — file does not implement the requested behavior"
 
-        mp.setattr("adp.engine.final_verifier.call_cloud_async", _mock_call)
+        mp.setattr("adp.engine.final_verifier.call_local_async", _mock_call)
         with pytest.raises(OutputVerificationError, match="do not satisfy the original prompt"):
             await verify_files_match_user_prompt(
                 "Create a tiny app",

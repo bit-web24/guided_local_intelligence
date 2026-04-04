@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import re
 
+from adp.config import get_model_config
 from adp.engine.cloud_client import call_cloud_async
+from adp.engine.local_client import call_local_async
 from adp.models.task import ContextDict, TaskPlan
 
 # ---------------------------------------------------------------------------
@@ -100,6 +102,26 @@ async def assemble(
         sys_prompt = TEXT_ASSEMBLER_SYSTEM_PROMPT.replace("{fragments_text}", fragments_text)
         sys_prompt += f"\n\nUser Request: {user_prompt}"
 
+    if not plan.write_to_file:
+        try:
+            raw = await call_local_async(
+                system_prompt=sys_prompt,
+                input_text="Produce the final response using only the provided fragments.",
+                anchor_str="Response:",
+                model_name=get_model_config().local_general,
+                temperature_override=0.0,
+                stage_name="assembler:local",
+            )
+        except Exception:
+            raw = await call_cloud_async(
+                system_prompt="",
+                user_message=sys_prompt,
+                temperature=0.0,
+                max_tokens=16384,
+                stage_name="assembler",
+            )
+        return {"__stdout__": raw}
+
     raw = await call_cloud_async(
         system_prompt="",
         user_message=sys_prompt,
@@ -107,9 +129,6 @@ async def assemble(
         max_tokens=16384,
         stage_name="assembler",
     )
-
-    if not plan.write_to_file:
-        return {"__stdout__": raw}
 
     files = _parse_file_delimiters(raw, plan.output_filenames)
 

@@ -22,7 +22,7 @@ from adp.engine.final_verifier import (
     verify_written_outputs,
 )
 from adp.engine.run_store import generate_run_id, load_run_state, save_run_state
-from adp.models.task import ContextDict, PipelineResult, StageList, TaskPlan
+from adp.models.task import AnchorType, ContextDict, MicroTask, PipelineResult, StageList, TaskPlan
 from adp.stages.assembler import assemble
 from adp.stages.decomposer import decompose
 from adp.stages.executor import execute_plan
@@ -33,7 +33,12 @@ from adp.stages.reflector import (
 )
 from adp.stages.replanner import replan
 from adp.stages.replanner import build_preserved_context
-from adp.writer import write_execution_log, write_output_files, write_success_artifact
+from adp.writer import (
+    build_execution_log_text,
+    build_success_artifact,
+    write_output_files_via_mcp,
+    write_text_file_via_mcp,
+)
 
 
 class AgentState(TypedDict, total=False):
@@ -58,6 +63,20 @@ class AgentState(TypedDict, total=False):
     max_replans: int
     reflection_results: list[dict]
     result: PipelineResult | None
+
+
+def _system_tool_task(task_id: str, description: str) -> MicroTask:
+    return MicroTask(
+        id=task_id,
+        description=description,
+        system_prompt_template="EXAMPLES:\nInput: x\nOutput: y\n---\nInput: {input_text}\nOutput:",
+        input_text=description,
+        output_key=f"{task_id}_status",
+        depends_on=[],
+        anchor=AnchorType.OUTPUT,
+        parallel_group=0,
+        model_type="general",
+    )
 
 
 def _persist(state: AgentState, **overrides: Any) -> None:
@@ -361,10 +380,20 @@ async def _finalize_node(state: AgentState) -> Command[Literal["replan", "fail",
     stdout_text: str | None = None
     if plan.write_to_file:
         write_error: str | None = None
+        final_write_task = _system_tool_task("finalize", "Write final output files via filesystem MCP")
         for attempt in range(FINAL_WRITE_VERIFY_RETRIES):
             callbacks.on_stage("WRITING")
             try:
-                written_files = write_output_files(files, state["output_dir"])
+                if state["mcp_manager"] is None:
+                    raise RuntimeError("Filesystem MCP server is required for output file operations.")
+                written_files = await write_output_files_via_mcp(
+                    files,
+                    state["output_dir"],
+                    state["mcp_manager"],
+                    task=final_write_task,
+                    on_tool_start=getattr(callbacks, "on_tool_start", None),
+                    on_tool_done=getattr(callbacks, "on_tool_done", None),
+                )
                 callbacks.on_stage("FINAL_VERIFY")
                 verify_written_outputs(plan, files, state["output_dir"])
                 write_error = None
@@ -398,14 +427,33 @@ async def _finalize_node(state: AgentState) -> Command[Literal["replan", "fail",
             goto="fail",
         )
 
-    write_execution_log(state["user_prompt"], plan, state["output_dir"])
-    write_success_artifact(
-        state["user_prompt"],
-        plan,
-        state.get("context", {}),
-        files,
-        state["output_dir"],
-    )
+    if state["mcp_manager"] is not None:
+        log_task = _system_tool_task("finalize_log", "Write execution log via filesystem MCP")
+        await write_text_file_via_mcp(
+            ".adp_execution_log.md",
+            build_execution_log_text(state["user_prompt"], plan),
+            state["output_dir"],
+            state["mcp_manager"],
+            task=log_task,
+            on_tool_start=getattr(callbacks, "on_tool_start", None),
+            on_tool_done=getattr(callbacks, "on_tool_done", None),
+        )
+        artifact_name, artifact_content = build_success_artifact(
+            state["user_prompt"],
+            plan,
+            state.get("context", {}),
+            files,
+        )
+        artifact_task = _system_tool_task("finalize_artifact", "Write success artifact via filesystem MCP")
+        await write_text_file_via_mcp(
+            artifact_name,
+            artifact_content,
+            state["output_dir"],
+            state["mcp_manager"],
+            task=artifact_task,
+            on_tool_start=getattr(callbacks, "on_tool_start", None),
+            on_tool_done=getattr(callbacks, "on_tool_done", None),
+        )
 
     callbacks.on_complete(written_files, state["output_dir"], stdout_text=stdout_text)
     result = PipelineResult(files=files, context=state.get("context", {}), tasks=plan.tasks)

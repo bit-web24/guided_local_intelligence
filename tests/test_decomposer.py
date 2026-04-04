@@ -190,6 +190,74 @@ class TestParseTaskPlan:
         assert "Dependency write_status:" in plan.tasks[1].system_prompt_template
         assert "{write_status}" in plan.tasks[1].system_prompt_template
 
+    def test_repairs_config_like_unknown_placeholder_to_dependency_output_key(self):
+        data = {
+            "tasks": [
+                {
+                    **VALID_PLAN_DATA["tasks"][0],
+                    "output_key": "listen_port",
+                },
+                {
+                    "id": "t2",
+                    "description": "Write server start block",
+                    "system_prompt_template": (
+                        "EXAMPLES:\n"
+                        "Port: 3000\n"
+                        "Code: app.listen(3000)\n"
+                        "---\n"
+                        "Port: {port}\n"
+                        "Input: {input_text}\n"
+                        "Code:"
+                    ),
+                    "input_text": "write listen block",
+                    "output_key": "server_start_code",
+                    "depends_on": ["t1"],
+                    "anchor": "Code:",
+                    "parallel_group": 1,
+                },
+            ],
+            "final_output_keys": ["server_start_code"],
+            "output_filenames": ["server.js"],
+        }
+
+        plan = _parse_task_plan(data)
+        assert "{listen_port}" in plan.tasks[1].system_prompt_template
+        assert "{port}" not in plan.tasks[1].system_prompt_template
+
+    def test_repairs_camel_case_config_placeholder_to_dependency_output_key(self):
+        data = {
+            "tasks": [
+                {
+                    **VALID_PLAN_DATA["tasks"][0],
+                    "output_key": "listen_port",
+                },
+                {
+                    "id": "t2",
+                    "description": "Write server start block",
+                    "system_prompt_template": (
+                        "EXAMPLES:\n"
+                        "Port: 3000\n"
+                        "Code: app.listen(3000)\n"
+                        "---\n"
+                        "Port: {listenPort}\n"
+                        "Input: {input_text}\n"
+                        "Code:"
+                    ),
+                    "input_text": "write listen block",
+                    "output_key": "server_start_code",
+                    "depends_on": ["t1"],
+                    "anchor": "Code:",
+                    "parallel_group": 1,
+                },
+            ],
+            "final_output_keys": ["server_start_code"],
+            "output_filenames": ["server.js"],
+        }
+
+        plan = _parse_task_plan(data)
+        assert "{listen_port}" in plan.tasks[1].system_prompt_template
+        assert "{listenPort}" not in plan.tasks[1].system_prompt_template
+
     def test_parse_task_plan_can_merge_existing_tasks_for_partial_replan(self):
         existing_task = MicroTask(
             id="t1",

@@ -18,6 +18,7 @@ class _Callbacks:
     errors: list[str] = field(default_factory=list)
     completed: list[tuple[list[tuple[str, int]], str, str | None]] = field(default_factory=list)
     retries: list[tuple[int, str]] = field(default_factory=list)
+    tools: list[tuple[str, str, bool | None]] = field(default_factory=list)
 
     def on_stage(self, stage: str) -> None:
         self.stages.append(stage)
@@ -36,6 +37,12 @@ class _Callbacks:
 
     def on_task_failed(self, task: MicroTask) -> None:
         return None
+
+    def on_tool_start(self, task: MicroTask, tool_name: str) -> None:
+        self.tools.append((task.id, tool_name, None))
+
+    def on_tool_done(self, task: MicroTask, tool_name: str, ok: bool, detail: str | None) -> None:
+        self.tools.append((task.id, tool_name, ok))
 
     def on_complete(self, written: list[tuple[str, int]], output_dir: str, stdout_text: str | None = None) -> None:
         self.completed.append((written, output_dir, stdout_text))
@@ -192,13 +199,12 @@ async def test_graph_resumes_from_assembled_state_without_reexecution(tmp_path):
     with patch("adp.agent_graph.execute_plan", AsyncMock()) as execute_mock, \
          patch("adp.agent_graph.reflect_plan", AsyncMock()) as reflect_mock, \
          patch("adp.agent_graph.verify_files_match_user_prompt", AsyncMock(return_value=None)), \
-         patch("adp.agent_graph.write_execution_log"), \
-         patch("adp.agent_graph.write_success_artifact"):
+         patch("adp.agent_graph.write_text_file_via_mcp", AsyncMock()):
         result = await run_agent_graph(
             user_prompt="",
             output_dir=str(tmp_path),
             callbacks=callbacks,
-            mcp_manager=None,
+            mcp_manager=object(),
             tool_registry=None,
             resume_run_id=run_id,
         )
@@ -207,3 +213,54 @@ async def test_graph_resumes_from_assembled_state_without_reexecution(tmp_path):
     assert execute_mock.await_count == 0
     assert reflect_mock.await_count == 0
     assert "RESUMING" in callbacks.stages
+
+
+@pytest.mark.asyncio
+async def test_graph_reports_filesystem_mcp_tools_during_finalize(tmp_path):
+    callbacks = _Callbacks()
+    plan = TaskPlan(
+        tasks=[
+            MicroTask(
+                id="t1",
+                description="Write markdown content",
+                system_prompt_template="EXAMPLES:\nInput: x\nOutput: y\n---\nInput: {input_text}\nOutput:",
+                input_text="run",
+                output_key="markdown_content",
+                depends_on=[],
+                anchor=AnchorType.OUTPUT,
+                parallel_group=0,
+                status=TaskStatus.DONE,
+                output="# Title\n\nLong enough content.\n" * 30,
+            )
+        ],
+        final_output_keys=["markdown_content"],
+        output_filenames=["books_api/README.md"],
+        write_to_file=True,
+    )
+
+    class _MCP:
+        async def call_tool(self, tool_name, arguments):
+            path = arguments["path"]
+            from pathlib import Path
+            if tool_name == "create_directory":
+                Path(path).mkdir(parents=True, exist_ok=True)
+            elif tool_name == "write_file":
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                Path(path).write_text(arguments["content"], encoding="utf-8")
+            return "ok"
+
+    with patch("adp.agent_graph.decompose", AsyncMock(return_value=plan)), \
+         patch("adp.agent_graph.execute_plan", AsyncMock(return_value={"markdown_content": plan.tasks[0].output})), \
+         patch("adp.agent_graph.reflect_plan", AsyncMock(return_value=[])), \
+         patch("adp.agent_graph.verify_files_match_user_prompt", AsyncMock(return_value=None)), \
+         patch("adp.agent_graph.write_text_file_via_mcp", AsyncMock(return_value="ok")):
+        await run_agent_graph(
+            user_prompt="Write README into books_api directory",
+            output_dir=str(tmp_path),
+            callbacks=callbacks,
+            mcp_manager=_MCP(),
+            tool_registry=None,
+        )
+
+    assert ("finalize", "create_directory", None) in callbacks.tools
+    assert ("finalize", "write_file", None) in callbacks.tools

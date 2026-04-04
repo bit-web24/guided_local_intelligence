@@ -45,7 +45,12 @@ async def test_clarifier_asks_then_merges():
     with patch(
         "adp.engine.clarifier.call_local_async",
         new=AsyncMock(side_effect=responses),
-    ) as mock_call:
+    ) as local_mock, patch(
+        "adp.engine.clarifier.call_cloud_async",
+        new=AsyncMock(
+            return_value='JSON: {"clarified_prompt": "Search the web for quantization in LLMs and write the content to info/quantization.md."}'
+        ),
+    ) as cloud_mock:
         result = await clarify_prompt_async(
             "Search the web for quantization in LLMs and write it to a file.",
             ask_user=ask_user,
@@ -55,7 +60,7 @@ async def test_clarifier_asks_then_merges():
     assert result.clarified_prompt == "Search the web for quantization in LLMs and write the content to info/quantization.md."
     assert result.clarification_turns_used == 1
     ask_user.assert_awaited_once()
-    stage_names = [call.kwargs["stage_name"] for call in mock_call.await_args_list]
+    stage_names = [call.kwargs["stage_name"] for call in local_mock.await_args_list] + [cloud_mock.await_args.kwargs["stage_name"]]
     assert stage_names == [
         "clarifier:detect",
         "clarifier:question",
@@ -81,7 +86,12 @@ async def test_clarifier_forces_merge_after_max_rounds():
     with patch(
         "adp.engine.clarifier.call_local_async",
         new=AsyncMock(side_effect=responses),
-    ) as mock_call:
+    ) as local_mock, patch(
+        "adp.engine.clarifier.call_cloud_async",
+        new=AsyncMock(
+            return_value='JSON: {"clarified_prompt": "Final clarified prompt."}'
+        ),
+    ) as cloud_mock:
         result = await clarify_prompt_async(
             "Initial prompt",
             ask_user=ask_user,
@@ -92,14 +102,14 @@ async def test_clarifier_forces_merge_after_max_rounds():
     assert result.clarified_prompt == "Final clarified prompt."
     assert result.clarification_turns_used == 3
     assert ask_user.await_count == 3
-    stage_names = [call.kwargs["stage_name"] for call in mock_call.await_args_list]
+    stage_names = [call.kwargs["stage_name"] for call in local_mock.await_args_list] + [cloud_mock.await_args.kwargs["stage_name"]]
     assert stage_names[-2:] == ["clarifier:detect", "clarifier:merge"]
 
 
 @pytest.mark.asyncio
 async def test_revise_clarified_prompt_incorporates_extra_user_input():
     with patch(
-        "adp.engine.clarifier.call_local_async",
+        "adp.engine.clarifier.call_cloud_async",
         new=AsyncMock(
             return_value='JSON: {"clarified_prompt": "Search the web for quantization in LLMs, summarize with markdown headings, and write the content to info/quantization.md."}'
         ),
@@ -111,3 +121,36 @@ async def test_revise_clarified_prompt_incorporates_extra_user_input():
 
     assert "markdown headings" in result
     assert mock_call.await_args.kwargs["stage_name"] == "clarifier:revise"
+
+
+@pytest.mark.asyncio
+async def test_revise_clarified_prompt_falls_back_when_model_returns_no_clarified_prompt():
+    with patch(
+        "adp.engine.clarifier.call_cloud_async",
+        new=AsyncMock(return_value='JSON: {"question": "wrong shape"}'),
+    ):
+        result = await revise_clarified_prompt_async(
+            "Create an Express.js API in books_api",
+            "Include CRUD routes for books.",
+        )
+
+    assert result == "Create an Express.js API in books_api. Additional requirement: Include CRUD routes for books."
+
+
+@pytest.mark.asyncio
+async def test_revise_clarified_prompt_rejects_apology_meta_output():
+    with patch(
+        "adp.engine.clarifier.call_cloud_async",
+        new=AsyncMock(
+            return_value='JSON: {"clarified_prompt": "I’m sorry, but I need the current clarified prompt and the user’s refinement in order to rewrite it. Could you please provide those details?"}'
+        ),
+    ):
+        result = await revise_clarified_prompt_async(
+            "create a book management api with roles, in node.js using express.js. write the files under a new directory.",
+            "under api/ dir",
+        )
+
+    assert result == (
+        "create a book management api with roles, in node.js using express.js. "
+        "write the files under a new directory. Additional requirement: under api/ dir"
+    )

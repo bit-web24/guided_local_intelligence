@@ -210,7 +210,7 @@ def render_tool_history(tool_history: list[str]) -> Panel:
 
 
 def render_output_files(filenames: list[str]) -> Panel:
-    """Footer bar listing expected output filenames."""
+    """Footer bar listing written output filenames."""
     t = Text()
     t.append("OUTPUT FILES: ", style=th.COLOR_FOOTER)
     for i, name in enumerate(filenames):

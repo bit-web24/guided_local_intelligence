@@ -5,7 +5,9 @@ import ast
 import json
 from pathlib import Path
 
+from adp.config import get_model_config
 from adp.engine.cloud_client import call_cloud_async
+from adp.engine.local_client import call_local_async
 from adp.models.task import ContextDict, TaskPlan, TaskStatus
 
 
@@ -126,13 +128,42 @@ async def verify_files_match_user_prompt(
         .replace("{files_text}", "\n".join(files_text_parts))
     )
 
-    raw = await call_cloud_async(
-        system_prompt="",
-        user_message=prompt,
-        temperature=0.0,
-        max_tokens=512,
-        stage_name="final_prompt_verify",
+    total_chars = sum(len(content) for content in files.values())
+    extensions = {Path(name).suffix.lower() for name in plan.output_filenames}
+    local_first = (
+        len(plan.output_filenames) <= 2 and total_chars <= 12000
     )
+    use_coder = any(
+        ext in {".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".toml", ".yaml", ".yml", ".sql"}
+        for ext in extensions
+    )
+
+    if local_first:
+        try:
+            raw = await call_local_async(
+                system_prompt=prompt,
+                input_text="Evaluate whether the final output satisfies the original request.",
+                anchor_str="Verdict:",
+                model_name=get_model_config().local_coder if use_coder else get_model_config().local_general,
+                temperature_override=0.0,
+                stage_name="final_prompt_verify:local_coder" if use_coder else "final_prompt_verify:local_general",
+            )
+        except Exception:
+            raw = await call_cloud_async(
+                system_prompt="",
+                user_message=prompt,
+                temperature=0.0,
+                max_tokens=512,
+                stage_name="final_prompt_verify",
+            )
+    else:
+        raw = await call_cloud_async(
+            system_prompt="",
+            user_message=prompt,
+            temperature=0.0,
+            max_tokens=512,
+            stage_name="final_prompt_verify",
+        )
     verdict = raw.strip()
     if verdict.upper().startswith("PASS"):
         return

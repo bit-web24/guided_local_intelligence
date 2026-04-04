@@ -1,11 +1,13 @@
-"""Pre-decomposition prompt clarification using micro-tasks on the local general model."""
+"""Pre-decomposition prompt clarification using hybrid local/cloud micro-tasks."""
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from adp.config import CLARIFICATION_MAX_ROUNDS, get_model_config
+from adp.engine.cloud_client import call_cloud_async
 from adp.engine.local_client import call_local_async
 from adp.engine.validator import extract_after_anchor, validate
 from adp.models.task import AnchorType
@@ -89,7 +91,7 @@ Conversation:
 User: Search the web for quantization in LLMs and write it to a file.
 Clarifier question: What filename should I use for the output file?
 User answer: Use info/quantization.md
-JSON: {"clarified_prompt":"Search the web for quantization in LLMs, summarize the findings, and write the content into the file info/quantization.md."}
+JSON: {"clarified_prompt":"Search the web for quantization in LLMs and write the gathered content into the file info/quantization.md."}
 
 Conversation:
 User: Fix my config
@@ -118,7 +120,7 @@ Current prompt:
 Search the web for quantization in LLMs and write the content into info/quantization.md.
 User refinement:
 Make it a markdown file with headings.
-JSON: {"clarified_prompt":"Search the web for quantization in LLMs, summarize the findings with clear markdown headings, and write the content into info/quantization.md."}
+JSON: {"clarified_prompt":"Search the web for quantization in LLMs, write the gathered content with clear markdown headings, and write it into info/quantization.md."}
 """
 
 
@@ -147,6 +149,26 @@ async def _call_json_step(
         input_text=input_text,
         anchor_str=AnchorType.JSON.value,
         model_name=get_model_config().local_general,
+        stage_name=stage_name,
+    )
+    extracted = extract_after_anchor(raw, AnchorType.JSON)
+    is_valid, cleaned = validate(extracted, AnchorType.JSON)
+    if not is_valid:
+        raise ValueError(f"{stage_name} returned invalid JSON.")
+    return json.loads(cleaned)
+
+
+async def _call_cloud_json_step(
+    *,
+    system_prompt: str,
+    input_text: str,
+    stage_name: str,
+) -> dict:
+    raw = await call_cloud_async(
+        system_prompt=system_prompt,
+        user_message=f"Input: {input_text}\n{AnchorType.JSON.value}",
+        temperature=0.0,
+        max_tokens=1024,
         stage_name=stage_name,
     )
     extracted = extract_after_anchor(raw, AnchorType.JSON)
@@ -205,7 +227,7 @@ async def _merge_clarified_prompt(
     qa_pairs: list[tuple[str, str]],
 ) -> str:
     conversation_text = _build_conversation_text(initial_prompt, qa_pairs)
-    data = await _call_json_step(
+    data = await _call_cloud_json_step(
         system_prompt=f"{CLARIFY_MERGE_PROMPT}\n\nConversation so far:\n{conversation_text}",
         input_text="Return the final clarified prompt.",
         stage_name="clarifier:merge",
@@ -221,19 +243,84 @@ async def revise_clarified_prompt_async(
     user_refinement: str,
 ) -> str:
     """Rephrase a clarified prompt by incorporating one extra user refinement."""
-    data = await _call_json_step(
-        system_prompt=(
-            f"{CLARIFY_REVISE_PROMPT}\n\n"
-            f"Current prompt:\n{clarified_prompt}\n\n"
-            f"User refinement:\n{user_refinement}"
-        ),
-        input_text="Return the revised clarified prompt.",
-        stage_name="clarifier:revise",
-    )
-    revised_prompt = str(data.get("clarified_prompt", "")).strip()
-    if not revised_prompt:
-        raise ValueError("clarifier:revise returned no clarified_prompt.")
-    return revised_prompt
+    try:
+        data = await _call_cloud_json_step(
+            system_prompt=(
+                f"{CLARIFY_REVISE_PROMPT}\n\n"
+                f"Current prompt:\n{clarified_prompt}\n\n"
+                f"User refinement:\n{user_refinement}"
+            ),
+            input_text="Return the revised clarified prompt.",
+            stage_name="clarifier:revise",
+        )
+        revised_prompt = str(data.get("clarified_prompt", "")).strip()
+        if _is_usable_revised_prompt(
+            source_prompt=clarified_prompt,
+            user_refinement=user_refinement,
+            revised_prompt=revised_prompt,
+        ):
+            return revised_prompt
+    except Exception:
+        pass
+
+    return _fallback_revise_prompt(clarified_prompt, user_refinement)
+
+
+def _fallback_revise_prompt(clarified_prompt: str, user_refinement: str) -> str:
+    """Deterministically preserve the current prompt when model revise output is unusable."""
+    base = clarified_prompt.strip().rstrip()
+    refinement = user_refinement.strip()
+    if not refinement:
+        return base
+    if not base:
+        return refinement
+    if base.endswith((".", "!", "?")):
+        return f"{base} Additional requirement: {refinement}"
+    return f"{base}. Additional requirement: {refinement}"
+
+
+def _is_usable_revised_prompt(
+    *,
+    source_prompt: str,
+    user_refinement: str,
+    revised_prompt: str,
+) -> bool:
+    candidate = revised_prompt.strip()
+    if not candidate:
+        return False
+
+    lower = candidate.lower()
+    if any(
+        phrase in lower
+        for phrase in (
+            "i'm sorry",
+            "i am sorry",
+            "could you please provide",
+            "please provide those details",
+            "i need the current clarified prompt",
+            "in order to rewrite it",
+        )
+    ):
+        return False
+
+    source_tokens = _meaningful_tokens(source_prompt)
+    refinement_tokens = _meaningful_tokens(user_refinement)
+    candidate_tokens = _meaningful_tokens(candidate)
+
+    if source_tokens and len(source_tokens & candidate_tokens) < min(2, len(source_tokens)):
+        return False
+    if refinement_tokens and not (refinement_tokens & candidate_tokens):
+        return False
+
+    return True
+
+
+def _meaningful_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-zA-Z0-9_./-]+", text.lower())
+        if len(token) >= 3 and token not in {"the", "and", "with", "into", "write", "file", "files"}
+    }
 
 
 async def clarify_prompt_async(
