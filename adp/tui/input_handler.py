@@ -8,7 +8,7 @@ from prompt_toolkit.styles import Style
 from adp.config import HISTORY_FILE
 
 
-def get_user_prompt(output_dir_hint: str = "") -> str | None:
+def get_user_input(prompt_label: str = "❯", output_dir_hint: str = "") -> str | None:
     """
     Display styled interactive input prompt.
 
@@ -31,6 +31,11 @@ def get_user_prompt(output_dir_hint: str = "") -> str | None:
 
     hint = f"  output → {output_dir_hint}\n" if output_dir_hint else ""
     try:
-        return session.prompt(f"{hint}  ❯ ")
+        return session.prompt(f"{hint}  {prompt_label} ")
     except (KeyboardInterrupt, EOFError):
         return None
+
+
+def get_user_prompt(output_dir_hint: str = "") -> str | None:
+    """Backwards-compatible wrapper for the main prompt entry."""
+    return get_user_input(output_dir_hint=output_dir_hint)

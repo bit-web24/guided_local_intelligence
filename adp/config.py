@@ -69,6 +69,7 @@ DECOMPOSITION_MAX_RETRIES = int(os.getenv("DECOMPOSITION_MAX_RETRIES", "6"))
 MAX_REPLANS = int(os.getenv("MAX_REPLANS", "2"))
 FINAL_ASSEMBLY_VERIFY_RETRIES = int(os.getenv("FINAL_ASSEMBLY_VERIFY_RETRIES", "2"))
 FINAL_WRITE_VERIFY_RETRIES = int(os.getenv("FINAL_WRITE_VERIFY_RETRIES", "3"))
+CLARIFICATION_MAX_ROUNDS = int(os.getenv("CLARIFICATION_MAX_ROUNDS", "3"))
 LOCAL_TEMPERATURE = 0.0     # always 0.0 for local — determinism is mandatory
 CLOUD_TEMPERATURE = 0.2     # slight creativity for decomposition only
 LOCAL_TIMEOUT = 120         # seconds per local model call

@@ -25,11 +25,18 @@ from functools import partial
 from typing import Callable
 
 from adp.agent_graph import run_agent_graph
-from adp.config import DEFAULT_OUTPUT_DIR, get_model_config, set_model_config
+from adp.config import (
+    CLARIFICATION_MAX_ROUNDS,
+    DEFAULT_OUTPUT_DIR,
+    get_model_config,
+    set_model_config,
+)
+from adp.engine.clarifier import clarify_prompt_async, revise_clarified_prompt_async
 from adp.engine.call_stats import reset_model_call_counts
 from adp.engine.local_client import check_ollama_connection
 from adp.models.task import PipelineResult
 from adp.tui.app import TUICallbacks, interactive_loop, make_plain_callbacks, run_with_live
+from adp.tui.input_handler import get_user_input
 from adp.mcp.config import load_mcp_config
 from adp.mcp.client import MCPClientManager
 
@@ -98,6 +105,73 @@ def run_pipeline(
         partial(run_pipeline_async, user_prompt, output_dir, callbacks, debug, resume_run_id),
         backend="asyncio",
     )
+
+
+def clarify_prompt(user_prompt: str, output_dir: str) -> str | None:
+    """Run the preflight clarification loop in the foreground terminal."""
+    import anyio
+    from rich.console import Console
+
+    console = Console()
+
+    def _announce(message: str) -> None:
+        console.print(f"[bold cyan]{message}[/]")
+
+    turns_used = 0
+    current_prompt = user_prompt
+
+    while True:
+        remaining_rounds = max(CLARIFICATION_MAX_ROUNDS - turns_used, 0)
+
+        async def _ask_user(question: str, round_number: int) -> str | None:
+            return get_user_input(
+                prompt_label=f"[clarify {turns_used + round_number}]",
+                output_dir_hint=output_dir,
+            )
+
+        result = anyio.run(
+            partial(
+                clarify_prompt_async,
+                current_prompt,
+                _ask_user,
+                _announce,
+                remaining_rounds,
+            ),
+            backend="asyncio",
+        )
+        if result is None:
+            return None
+
+        turns_used += result.clarification_turns_used
+        current_prompt = result.clarified_prompt
+
+        console.print("[bold green]Clarified prompt:[/]")
+        console.print(current_prompt)
+
+        if turns_used >= CLARIFICATION_MAX_ROUNDS:
+            console.print("[dim]Clarification limit reached. Proceeding.[/]\n")
+            return current_prompt
+
+        console.print("[dim]Type 'continue' to proceed, or provide more clarification.[/]")
+        user_reply = get_user_input(
+            prompt_label=f"[clarify {turns_used + 1}]",
+            output_dir_hint=output_dir,
+        )
+        if user_reply is None:
+            return None
+
+        reply = user_reply.strip()
+        if not reply:
+            continue
+        if reply.lower() == "continue":
+            console.print()
+            return current_prompt
+
+        current_prompt = anyio.run(
+            partial(revise_clarified_prompt_async, current_prompt, reply),
+            backend="asyncio",
+        )
+        turns_used += 1
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +285,15 @@ def cli() -> None:
                 "Proceeding — calls may fail.",
                 file=sys.stderr,
             )
-        pipeline_fn = pipeline_fn_factory(args.prompt or "", output_dir, resume_run_id)
+        effective_prompt = args.prompt or ""
+        if effective_prompt and resume_run_id is None:
+            clarified_prompt = clarify_prompt(effective_prompt, output_dir)
+            if clarified_prompt is None:
+                print("Cancelled during clarification.", file=sys.stderr)
+                sys.exit(1)
+            effective_prompt = clarified_prompt
+
+        pipeline_fn = pipeline_fn_factory(effective_prompt, output_dir, resume_run_id)
         try:
             if no_tui:
                 callbacks = make_plain_callbacks()
@@ -228,6 +310,7 @@ def cli() -> None:
             output_dir=output_dir,
             no_tui=no_tui,
             check_ollama_fn=check_ollama,
+            clarify_prompt_fn=clarify_prompt,
         )
 
 

@@ -471,6 +471,7 @@ def interactive_loop(
     output_dir: str,
     no_tui: bool,
     check_ollama_fn: Callable[[], bool],
+    clarify_prompt_fn: Callable[[str, str], str | None] | None = None,
 ) -> None:
     """
     REPL loop: collect prompt → run pipeline → repeat.
@@ -497,7 +498,16 @@ def interactive_loop(
                 "Proceeding anyway — calls may fail."
             )
 
-        pipeline_fn = pipeline_fn_factory(user_prompt, output_dir)
+        effective_prompt = user_prompt
+        if clarify_prompt_fn is not None:
+            clarified = clarify_prompt_fn(user_prompt, output_dir)
+            if clarified is None:
+                console.print("[dim]Cancelled during clarification.[/]")
+                console.print()
+                continue
+            effective_prompt = clarified
+
+        pipeline_fn = pipeline_fn_factory(effective_prompt, output_dir)
 
         try:
             if no_tui:
