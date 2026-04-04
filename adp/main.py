@@ -31,7 +31,12 @@ from adp.config import (
     get_model_config,
     set_model_config,
 )
-from adp.engine.clarifier import clarify_prompt_async, revise_clarified_prompt_async
+from adp.engine.clarifier import (
+    detect_clarification_need_sync,
+    generate_clarification_question_sync,
+    merge_clarified_prompt_sync,
+    revise_clarified_prompt_sync,
+)
 from adp.engine.call_stats import reset_model_call_counts
 from adp.engine.local_client import check_ollama_connection
 from adp.models.task import PipelineResult
@@ -109,7 +114,6 @@ def run_pipeline(
 
 def clarify_prompt(user_prompt: str, output_dir: str) -> str | None:
     """Run the preflight clarification loop in the foreground terminal."""
-    import anyio
     from rich.console import Console
 
     console = Console()
@@ -117,60 +121,54 @@ def clarify_prompt(user_prompt: str, output_dir: str) -> str | None:
     def _announce(message: str) -> None:
         console.print(f"[bold cyan]{message}[/]")
 
+    qa_pairs: list[tuple[str, str]] = []
     turns_used = 0
     current_prompt = user_prompt
 
     while True:
         remaining_rounds = max(CLARIFICATION_MAX_ROUNDS - turns_used, 0)
-
-        async def _ask_user(question: str, round_number: int) -> str | None:
-            return get_user_input(
-                prompt_label=f"[clarify {turns_used + round_number}]",
-                output_dir_hint=output_dir,
-            )
-
-        result = anyio.run(
-            partial(
-                clarify_prompt_async,
-                current_prompt,
-                _ask_user,
-                _announce,
-                remaining_rounds,
-            ),
-            backend="asyncio",
+        need = detect_clarification_need_sync(
+            current_prompt,
+            qa_pairs,
+            force_proceed=remaining_rounds <= 0,
         )
-        if result is None:
-            return None
+        if bool(need.get("needs_clarification", False)) and remaining_rounds > 0:
+            reason_label = str(need.get("reason_label", "")).strip() or "missing_information"
+            question = generate_clarification_question_sync(current_prompt, qa_pairs, reason_label)
+            _announce(f"Clarification {turns_used + 1}/{CLARIFICATION_MAX_ROUNDS}: {question}")
+            answer = get_user_input(
+                prompt_label=f"[clarify {turns_used + 1}]",
+            )
+            if answer is None:
+                return None
+            answer = answer.strip()
+            if not answer:
+                console.print()
+                return current_prompt
+            qa_pairs.append((question, answer))
+            turns_used += 1
+            current_prompt = merge_clarified_prompt_sync(current_prompt, qa_pairs)
+            qa_pairs = []
 
-        turns_used += result.clarification_turns_used
-        current_prompt = result.clarified_prompt
-
-        console.print("[bold green]Clarified prompt:[/]")
+        console.print("\n[bold green]Clarified prompt:[/]")
         console.print(current_prompt)
 
         if turns_used >= CLARIFICATION_MAX_ROUNDS:
             console.print("[dim]Clarification limit reached. Proceeding.[/]\n")
             return current_prompt
 
-        console.print("[dim]Type 'continue' to proceed, or provide more clarification.[/]")
+        console.print("[dim]Press Enter to proceed, or type a refinement.[/]")
         user_reply = get_user_input(
             prompt_label=f"[clarify {turns_used + 1}]",
-            output_dir_hint=output_dir,
         )
         if user_reply is None:
             return None
 
         reply = user_reply.strip()
         if not reply:
-            continue
-        if reply.lower() == "continue":
             console.print()
             return current_prompt
-
-        current_prompt = anyio.run(
-            partial(revise_clarified_prompt_async, current_prompt, reply),
-            backend="asyncio",
-        )
+        current_prompt = revise_clarified_prompt_sync(current_prompt, reply)
         turns_used += 1
 
 

@@ -8,6 +8,13 @@ from prompt_toolkit.styles import Style
 from adp.config import HISTORY_FILE
 
 
+_PROMPT_STYLE = Style.from_dict({
+    "prompt": "bold #7dd3fc",
+    "prompt.label": "bold #22d3ee",
+    "": "white",
+})
+
+
 def get_user_input(prompt_label: str = "❯", output_dir_hint: str = "") -> str | None:
     """
     Display styled interactive input prompt.
@@ -21,17 +28,20 @@ def get_user_input(prompt_label: str = "❯", output_dir_hint: str = "") -> str 
     """
     session: PromptSession = PromptSession(
         history=FileHistory(HISTORY_FILE),
-        style=Style.from_dict({
-            "prompt": "bold cyan",
-            "":       "white",
-        }),
+        style=_PROMPT_STYLE,
         wrap_lines=True,
         multiline=False,
     )
 
-    hint = f"  output → {output_dir_hint}\n" if output_dir_hint else ""
     try:
-        return session.prompt(f"{hint}  {prompt_label} ")
+        return session.prompt(
+            [
+                ("class:prompt", "  "),
+                ("class:prompt.label", prompt_label),
+                ("class:prompt", " "),
+            ],
+            bottom_toolbar="  Enter submit   Ctrl+C cancel   ↑↓ history  ",
+        )
     except (KeyboardInterrupt, EOFError):
         return None
 

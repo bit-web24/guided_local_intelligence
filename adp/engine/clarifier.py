@@ -288,3 +288,63 @@ async def clarify_prompt_async(
         clarified_prompt=await _merge_clarified_prompt(initial_prompt, qa_pairs),
         clarification_turns_used=turns_used,
     )
+
+
+def detect_clarification_need_sync(
+    initial_prompt: str,
+    qa_pairs: list[tuple[str, str]],
+    force_proceed: bool = False,
+) -> dict:
+    import anyio
+
+    return anyio.run(
+        _detect_clarification_need,
+        initial_prompt,
+        qa_pairs,
+        force_proceed,
+        backend="asyncio",
+    )
+
+
+def generate_clarification_question_sync(
+    initial_prompt: str,
+    qa_pairs: list[tuple[str, str]],
+    reason_label: str,
+) -> str:
+    import anyio
+
+    return anyio.run(
+        _generate_clarification_question,
+        initial_prompt,
+        qa_pairs,
+        reason_label,
+        backend="asyncio",
+    )
+
+
+def merge_clarified_prompt_sync(
+    initial_prompt: str,
+    qa_pairs: list[tuple[str, str]],
+) -> str:
+    import anyio
+
+    return anyio.run(
+        _merge_clarified_prompt,
+        initial_prompt,
+        qa_pairs,
+        backend="asyncio",
+    )
+
+
+def revise_clarified_prompt_sync(
+    clarified_prompt: str,
+    user_refinement: str,
+) -> str:
+    import anyio
+
+    return anyio.run(
+        revise_clarified_prompt_async,
+        clarified_prompt,
+        user_refinement,
+        backend="asyncio",
+    )

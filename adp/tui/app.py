@@ -483,7 +483,7 @@ def interactive_loop(
     console.print(f"[dim]Type your prompt and press Enter. Ctrl+C to exit.[/]\n")
 
     while True:
-        user_prompt = get_user_prompt(output_dir_hint=output_dir)
+        user_prompt = get_user_prompt()
         if user_prompt is None:
             console.print("\n[dim]Bye.[/]")
             break
