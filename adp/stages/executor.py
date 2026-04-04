@@ -83,47 +83,64 @@ async def _prefetch_mcp_for_group(
     """
     try:
         from adp.mcp.resolver import resolve_tool_args
+        from adp.mcp.tool_router import route_task_tools
     except ImportError:
         return   # mcp sub-package not available — silently skip
+
+    async def _call_tool(
+        task: MicroTask,
+        tool_name: str,
+        explicit_args: dict | None = None,
+    ) -> None:
+        context_key = f"{task.id}_{tool_name}_result"
+        if tool_name not in tool_registry:
+            if on_tool_start is not None:
+                on_tool_start(task, tool_name)
+            logger.warning(
+                f"Task '{task.id}' references unknown MCP tool '{tool_name}'. "
+                "Skipping."
+            )
+            context[context_key] = f"[MCP tool '{tool_name}' not found]"
+            if on_tool_done is not None:
+                on_tool_done(task, tool_name, False, "not found")
+            return
+
+        try:
+            if on_tool_start is not None:
+                on_tool_start(task, tool_name)
+            mcp_tool = tool_registry[tool_name]
+            args = resolve_tool_args(mcp_tool, task, context, explicit_overrides=explicit_args)
+            result = await mcp_manager.call_tool(tool_name, args)
+            context[context_key] = result
+            if on_tool_done is not None:
+                on_tool_done(task, tool_name, True, None)
+            logger.debug(
+                f"MCP pre-fetch '{tool_name}' ({task.id}) → '{context_key}' "
+                f"({len(result)} chars)"
+            )
+        except Exception as e:
+            logger.warning(
+                f"MCP tool '{tool_name}' for task '{task.id}' failed: {e}. "
+                "Injecting error notice."
+            )
+            context[context_key] = f"[MCP tool '{tool_name}' failed: {e}]"
+            if on_tool_done is not None:
+                on_tool_done(task, tool_name, False, str(e))
 
     for task in tasks:
         if not task.mcp_tools:
             continue
+        routed_calls = await route_task_tools(task, context, tool_registry)
+        routed_tools: set[str] = set()
+        if routed_calls:
+            for routed_call in routed_calls:
+                routed_tools.add(routed_call.tool)
+                await _call_tool(task, routed_call.tool, explicit_args=routed_call.arguments)
+
         for tool_name in task.mcp_tools:
-            # Task-scoped key — unique per (task, tool) pair
-            context_key = f"{task.id}_{tool_name}_result"
-            if tool_name not in tool_registry:
-                if on_tool_start is not None:
-                    on_tool_start(task, tool_name)
-                logger.warning(
-                    f"Task '{task.id}' references unknown MCP tool '{tool_name}'. "
-                    "Skipping."
-                )
-                context[context_key] = f"[MCP tool '{tool_name}' not found]"
-                if on_tool_done is not None:
-                    on_tool_done(task, tool_name, False, "not found")
+            if tool_name in routed_tools:
                 continue
-            try:
-                if on_tool_start is not None:
-                    on_tool_start(task, tool_name)
-                mcp_tool = tool_registry[tool_name]
-                args = resolve_tool_args(mcp_tool, task, context)
-                result = await mcp_manager.call_tool(tool_name, args)
-                context[context_key] = result
-                if on_tool_done is not None:
-                    on_tool_done(task, tool_name, True, None)
-                logger.debug(
-                    f"MCP pre-fetch '{tool_name}' ({task.id}) → '{context_key}' "
-                    f"({len(result)} chars)"
-                )
-            except Exception as e:
-                logger.warning(
-                    f"MCP tool '{tool_name}' for task '{task.id}' failed: {e}. "
-                    "Injecting error notice."
-                )
-                context[context_key] = f"[MCP tool '{tool_name}' failed: {e}]"
-                if on_tool_done is not None:
-                    on_tool_done(task, tool_name, False, str(e))
+            await _call_tool(task, tool_name)
 
 
 # ---------------------------------------------------------------------------

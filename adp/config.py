@@ -14,6 +14,7 @@ class ModelConfig:
     cloud: str
     local_coder: str
     local_general: str
+    local_tool_router: str
 
 
 # ---------------------------------------------------------------------------
@@ -22,6 +23,7 @@ class ModelConfig:
 DEFAULT_CLOUD_MODEL = "gpt-oss:120b-cloud"      # large: decompose + assemble
 DEFAULT_LOCAL_CODER_MODEL = "qwen2.5-coder:1.5b"  # small: logic/coding tasks
 DEFAULT_LOCAL_GENERAL_MODEL = "qwen2.5:1.5b"      # small: text/extraction tasks
+DEFAULT_LOCAL_TOOL_ROUTER_MODEL = "functiongemma:latest"  # tiny: MCP tool routing
 OLLAMA_BASE_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
 
@@ -31,6 +33,7 @@ def get_model_config() -> ModelConfig:
         cloud=os.getenv("CLOUD_MODEL", DEFAULT_CLOUD_MODEL),
         local_coder=os.getenv("LOCAL_CODER_MODEL", DEFAULT_LOCAL_CODER_MODEL),
         local_general=os.getenv("LOCAL_GENERAL_MODEL", DEFAULT_LOCAL_GENERAL_MODEL),
+        local_tool_router=os.getenv("LOCAL_TOOL_ROUTER_MODEL", DEFAULT_LOCAL_TOOL_ROUTER_MODEL),
     )
 
 
@@ -39,6 +42,7 @@ def set_model_config(
     cloud: str | None = None,
     local_coder: str | None = None,
     local_general: str | None = None,
+    local_tool_router: str | None = None,
     local: str | None = None,
 ) -> ModelConfig:
     """Apply model overrides globally for the current process."""
@@ -52,6 +56,8 @@ def set_model_config(
         os.environ["LOCAL_CODER_MODEL"] = local_coder
     if local_general is not None:
         os.environ["LOCAL_GENERAL_MODEL"] = local_general
+    if local_tool_router is not None:
+        os.environ["LOCAL_TOOL_ROUTER_MODEL"] = local_tool_router
 
     return get_model_config()
 

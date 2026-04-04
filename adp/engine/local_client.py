@@ -86,3 +86,15 @@ async def check_ollama_connection() -> bool:
             return all(any(req in avail for avail in available) for req in required_models)
     except Exception:
         return False
+
+
+async def is_local_model_available(model_name: str) -> bool:
+    """Fast availability probe for one local Ollama model."""
+    try:
+        async with httpx.AsyncClient(timeout=2) as client:
+            response = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+            data = response.json()
+            available = {m["name"] for m in data.get("models", [])}
+            return any(model_name in avail for avail in available)
+    except Exception:
+        return False

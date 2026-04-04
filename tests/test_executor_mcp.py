@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from adp.models.task import AnchorType, MicroTask, TaskPlan, TaskStatus
 from adp.stages.executor import _prefetch_mcp_for_group, execute_task, fill_template
+from adp.mcp.tool_router import route_task_tools
 from adp.mcp.registry import MCPTool, ToolRegistry
 
 
@@ -212,6 +213,78 @@ async def test_unknown_tool_writes_not_found_notice():
     assert "t1_nonexistent_tool_result" in context
     assert "not found" in context["t1_nonexistent_tool_result"].lower()
     mcp_manager.call_tool.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_functiongemma_router_overrides_planner_args():
+    task = _make_task(
+        mcp_tools=["read_file"],
+        mcp_tool_args={"read_file": {"path": "/tmp/wrong.py"}},
+    )
+    tool = _make_tool()
+    registry = _make_registry(tool)
+    mcp_manager = AsyncMock()
+    mcp_manager.call_tool.return_value = "def foo(): pass"
+
+    with patch(
+        "adp.mcp.tool_router.is_local_model_available",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "adp.mcp.tool_router.call_local_async",
+        new=AsyncMock(return_value='JSON: {"calls":[{"tool":"read_file","arguments":{"path":"/tmp/correct.py"}}]}'),
+    ):
+        context = {}
+        await _prefetch_mcp_for_group([task], context, mcp_manager, registry)
+
+    mcp_manager.call_tool.assert_awaited_once_with("read_file", {"path": "/tmp/correct.py"})
+    assert context["t1_read_file_result"] == "def foo(): pass"
+
+
+@pytest.mark.asyncio
+async def test_functiongemma_router_falls_back_on_invalid_json():
+    task = _make_task(
+        mcp_tools=["read_file"],
+        mcp_tool_args={"read_file": {"path": "/tmp/main.py"}},
+    )
+    tool = _make_tool()
+    registry = _make_registry(tool)
+    mcp_manager = AsyncMock()
+    mcp_manager.call_tool.return_value = "def foo(): pass"
+
+    with patch(
+        "adp.mcp.tool_router.is_local_model_available",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "adp.mcp.tool_router.call_local_async",
+        new=AsyncMock(return_value="not json"),
+    ):
+        context = {}
+        await _prefetch_mcp_for_group([task], context, mcp_manager, registry)
+
+    mcp_manager.call_tool.assert_awaited_once_with("read_file", {"path": "/tmp/main.py"})
+
+
+@pytest.mark.asyncio
+async def test_route_task_tools_parses_valid_functiongemma_json():
+    task = _make_task(
+        mcp_tools=["read_file"],
+        mcp_tool_args={"read_file": {"path": "/tmp/main.py"}},
+    )
+    tool = _make_tool()
+    registry = _make_registry(tool)
+
+    with patch(
+        "adp.mcp.tool_router.is_local_model_available",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "adp.mcp.tool_router.call_local_async",
+        new=AsyncMock(return_value='JSON: {"calls":[{"tool":"read_file","arguments":{"path":"/tmp/main.py"}}]}'),
+    ):
+        routed = await route_task_tools(task, {}, registry)
+
+    assert routed is not None
+    assert routed[0].tool == "read_file"
+    assert routed[0].arguments == {"path": "/tmp/main.py"}
 
 
 # ---------------------------------------------------------------------------

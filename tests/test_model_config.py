@@ -8,6 +8,7 @@ from adp.config import (
     DEFAULT_CLOUD_MODEL,
     DEFAULT_LOCAL_CODER_MODEL,
     DEFAULT_LOCAL_GENERAL_MODEL,
+    DEFAULT_LOCAL_TOOL_ROUTER_MODEL,
     get_model_config,
     set_model_config,
 )
@@ -26,26 +27,34 @@ class TestModelConfig:
         monkeypatch.delenv("CLOUD_MODEL", raising=False)
         monkeypatch.delenv("LOCAL_CODER_MODEL", raising=False)
         monkeypatch.delenv("LOCAL_GENERAL_MODEL", raising=False)
+        monkeypatch.delenv("LOCAL_TOOL_ROUTER_MODEL", raising=False)
 
         models = get_model_config()
 
         assert models.cloud == DEFAULT_CLOUD_MODEL
         assert models.local_coder == DEFAULT_LOCAL_CODER_MODEL
         assert models.local_general == DEFAULT_LOCAL_GENERAL_MODEL
+        assert models.local_tool_router == DEFAULT_LOCAL_TOOL_ROUTER_MODEL
 
     def test_set_model_config_supports_shared_and_split_local_overrides(self, monkeypatch):
         monkeypatch.delenv("CLOUD_MODEL", raising=False)
         monkeypatch.delenv("LOCAL_CODER_MODEL", raising=False)
         monkeypatch.delenv("LOCAL_GENERAL_MODEL", raising=False)
+        monkeypatch.delenv("LOCAL_TOOL_ROUTER_MODEL", raising=False)
 
         models = set_model_config(cloud="cloud-a", local="local-a")
         assert models.cloud == "cloud-a"
         assert models.local_coder == "local-a"
         assert models.local_general == "local-a"
 
-        models = set_model_config(local_coder="coder-b", local_general="general-b")
+        models = set_model_config(
+            local_coder="coder-b",
+            local_general="general-b",
+            local_tool_router="tool-router-b",
+        )
         assert models.local_coder == "coder-b"
         assert models.local_general == "general-b"
+        assert models.local_tool_router == "tool-router-b"
 
 
 class TestRuntimeModelUsage:

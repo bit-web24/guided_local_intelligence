@@ -21,6 +21,7 @@ def resolve_tool_args(
     tool: MCPTool,
     task: MicroTask,
     context: ContextDict,
+    explicit_overrides: dict | None = None,
 ) -> dict:
     """
     Build the final args dict to pass to MCPClientManager.call_tool().
@@ -51,6 +52,8 @@ def resolve_tool_args(
     # Step 2: Apply literal overrides from task.mcp_tool_args (if any)
     literal_overrides = task.mcp_tool_args.get(tool.name, {})
     args.update(literal_overrides)
+    if explicit_overrides:
+        args.update(explicit_overrides)
 
     # Step 3: Resolve {placeholder} patterns in all string values
     for key, value in args.items():
