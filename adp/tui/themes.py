@@ -37,6 +37,12 @@ COLOR_SIZE = "dim white"
 COLOR_ERROR = "bold red"
 COLOR_STAGE = "bold magenta"
 COLOR_TITLE = "bold white"
+COLOR_TOOL_CALL = "bold cyan"
+COLOR_TOOL_DONE = "bold green"
+COLOR_TOOL_FAILED = "bold red"
+COLOR_TOOL_NEUTRAL = "dim cyan"
+COLOR_INPUT_TOOLBAR = "italic #7dd3fc"
+COLOR_INPUT_TOOLBAR_KEY = "bold #22d3ee"
 
 # ---------------------------------------------------------------------------
 # Panel/layout

@@ -12,6 +12,8 @@ _PROMPT_STYLE = Style.from_dict({
     "prompt": "bold #7dd3fc",
     "prompt.label": "bold #22d3ee",
     "": "white",
+    "bottom-toolbar": "italic #7dd3fc",
+    "bottom-toolbar.key": "bold #22d3ee",
 })
 
 
@@ -40,7 +42,15 @@ def get_user_input(prompt_label: str = "❯", output_dir_hint: str = "") -> str 
                 ("class:prompt.label", prompt_label),
                 ("class:prompt", " "),
             ],
-            bottom_toolbar="  Enter submit   Ctrl+C cancel   ↑↓ history  ",
+            bottom_toolbar=[
+                ("class:bottom-toolbar", "  "),
+                ("class:bottom-toolbar.key", "Enter"),
+                ("class:bottom-toolbar", " submit   "),
+                ("class:bottom-toolbar.key", "Ctrl+C"),
+                ("class:bottom-toolbar", " cancel   "),
+                ("class:bottom-toolbar.key", "↑↓"),
+                ("class:bottom-toolbar", " history  "),
+            ],
         )
     except (KeyboardInterrupt, EOFError):
         return None

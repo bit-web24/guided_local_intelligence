@@ -195,7 +195,15 @@ def render_tool_history(tool_history: list[str]) -> Panel:
         body.append("No MCP tools called yet.", style=th.COLOR_FOOTER)
     else:
         for index, entry in enumerate(entries):
-            style = th.COLOR_ERROR if "failed" in entry.lower() else th.COLOR_FOOTER
+            lowered = entry.lower()
+            if "failed" in lowered:
+                style = th.COLOR_TOOL_FAILED
+            elif "done" in lowered:
+                style = th.COLOR_TOOL_DONE
+            elif "call" in lowered:
+                style = th.COLOR_TOOL_CALL
+            else:
+                style = th.COLOR_TOOL_NEUTRAL
             body.append(entry, style=style)
             if index != len(entries) - 1:
                 body.append("\n")

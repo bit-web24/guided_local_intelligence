@@ -428,7 +428,8 @@ def run_with_live(
         _build_layout(_read_state()),
         console=console,
         refresh_per_second=10,
-        screen=False,
+        screen=True,
+        transient=True,
     ) as live:
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(_run)
