@@ -35,8 +35,8 @@ command   = "npx"
 args      = ["-y", "open-websearch@latest"]
 [servers.env]
 MODE = "stdio"
-DEFAULT_SEARCH_ENGINE = "startpage"
-ALLOWED_SEARCH_ENGINES = "startpage,duckduckgo"
+DEFAULT_SEARCH_ENGINE = "duckduckgo"
+ALLOWED_SEARCH_ENGINES = "duckduckgo,startpage"
 
 # --- GitHub server (repos, PRs, issues) ---
 # [[servers]]

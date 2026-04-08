@@ -58,7 +58,7 @@ Defaults are defined there, and you can override them per run with CLI flags or 
 | Option | Description |
 |---|---|
 | `PROMPT` | Task prompt (omit for interactive TUI mode) |
-| `--output`, `-o` | Output directory (default: `./adp_output`) |
+| `--output`, `-o` | Output directory (default: `./output`) |
 | `--model`, `-m` | Override both local Ollama models |
 | `--cloud-model` | Override the cloud/planner model |
 | `--coder-model` | Override the local coder model |
@@ -106,7 +106,7 @@ User Prompt
      ▼ (large Ollama model — once)
 Decompose → Task Plan (dependency graph, few-shot prompts)
      │
-     ▼ (small Ollama model — many times, parallel)
+     ▼ (small Ollama model — many times, sequential)
 Execute → Context Dict (key → output per task)
      │
      ▼ (large Ollama model — once)

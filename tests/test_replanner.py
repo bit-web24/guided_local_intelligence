@@ -59,7 +59,10 @@ def test_build_preserved_context_keeps_only_completed_outputs():
     }
 
     preserved = build_preserved_context(plan, context)
-    assert preserved == {"web_results": "done"}
+    assert preserved == {
+        "web_results": "done",
+        "t1_read_text_file_result": "ephemeral",
+    }
 
 
 @pytest.mark.asyncio

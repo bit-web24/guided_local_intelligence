@@ -10,7 +10,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from adp.models.task import AnchorType, MicroTask, TaskPlan, TaskStatus
-from adp.stages.executor import _prefetch_mcp_for_group, execute_task, fill_template
+from adp.stages.executor import _prefetch_mcp_for_group, execute_plan, execute_task, fill_template
 from adp.mcp.tool_router import route_task_tools
 from adp.mcp.registry import MCPTool, ToolRegistry
 
@@ -193,11 +193,11 @@ async def test_shared_tool_fetched_only_once():
     context = {}
     await _prefetch_mcp_for_group([task1, task2], context, mcp_manager, registry)
 
-    # Called only once: t1 fetches, t2 has its OWN key so also fetches
-    # With task-scoped keys, both tasks always fetch independently
-    assert mcp_manager.call_tool.await_count == 2
+    # With run-level MCP cache, same tool+args is fetched once and reused.
+    assert mcp_manager.call_tool.await_count == 1
     assert "t1_read_file_result" in context
     assert "t2_read_file_result" in context
+    assert context["t1_read_file_result"] == context["t2_read_file_result"]
 
 
 @pytest.mark.asyncio
@@ -323,3 +323,42 @@ def test_fill_template_with_mcp_result_key():
     context = {"t2_read_file_result": "def foo(): pass"}
     result = fill_template(template, context)
     assert "def foo(): pass" in result
+
+
+@pytest.mark.asyncio
+async def test_identical_tool_call_reused_across_groups_in_execute_plan():
+    t1 = _make_task(
+        mcp_tools=["read_file"],
+        mcp_tool_args={"read_file": {"path": "/tmp/main.py"}},
+    )
+    t1.id = "t1"
+    t1.output_key = "out_t1"
+    t1.parallel_group = 0
+
+    t2 = _make_task(
+        mcp_tools=["read_file"],
+        mcp_tool_args={"read_file": {"path": "/tmp/main.py"}},
+    )
+    t2.id = "t2"
+    t2.output_key = "out_t2"
+    t2.parallel_group = 1
+    t2.depends_on = ["t1"]
+
+    plan = TaskPlan(tasks=[t1, t2], final_output_keys=["out_t2"], output_filenames=[])
+    tool = _make_tool()
+    registry = _make_registry(tool)
+
+    mcp_manager = AsyncMock()
+    mcp_manager.call_tool.return_value = "def foo(): pass"
+
+    with patch("adp.stages.executor.call_local_async", new=AsyncMock(return_value="Output: ok")):
+        await execute_plan(
+            plan,
+            lambda _task: None,
+            lambda _task: None,
+            lambda _task: None,
+            mcp_manager=mcp_manager,
+            tool_registry=registry,
+        )
+
+    assert mcp_manager.call_tool.await_count == 1

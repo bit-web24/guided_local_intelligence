@@ -465,33 +465,37 @@ def _normalize_suffix_tasks(
     """Rename colliding suffix task ids/output keys and rewrite references."""
     used_ids = {task.id for task in existing_tasks}
     used_output_keys = {task.output_key for task in existing_tasks}
-    id_map: dict[str, str] = {}
-    output_key_map: dict[str, str] = {}
+    canonical_id_map: dict[str, str] = {}
+    canonical_output_key_map: dict[str, str] = {}
+    normalized_ids: list[str] = []
+    normalized_output_keys: list[str] = []
 
     for task in new_tasks:
         new_id = task.id
         if new_id in used_ids:
             new_id = _next_task_id(used_ids)
         used_ids.add(new_id)
-        id_map[task.id] = new_id
+        normalized_ids.append(new_id)
+        canonical_id_map.setdefault(task.id, new_id)
 
         new_output_key = task.output_key
         if new_output_key in used_output_keys:
             new_output_key = _next_output_key(new_output_key, used_output_keys)
         used_output_keys.add(new_output_key)
-        output_key_map[task.output_key] = new_output_key
+        normalized_output_keys.append(new_output_key)
+        canonical_output_key_map.setdefault(task.output_key, new_output_key)
 
     normalized_tasks: list[MicroTask] = []
-    for task in new_tasks:
+    for index, task in enumerate(new_tasks):
         template = task.system_prompt_template
         placeholders = set(_TEMPLATE_PLACEHOLDER_RE.findall(template))
 
-        for old_key, new_key in output_key_map.items():
+        for old_key, new_key in canonical_output_key_map.items():
             if old_key != new_key:
                 template = template.replace(f"{{{old_key}}}", f"{{{new_key}}}")
 
         for placeholder in sorted(placeholders):
-            for old_id, new_id in id_map.items():
+            for old_id, new_id in canonical_id_map.items():
                 if old_id != new_id and placeholder.startswith(f"{old_id}_"):
                     remapped_placeholder = f"{new_id}_{placeholder[len(old_id) + 1:]}"
                     template = template.replace(
@@ -502,14 +506,14 @@ def _normalize_suffix_tasks(
 
         normalized_tasks.append(replace(
             task,
-            id=id_map[task.id],
-            output_key=output_key_map[task.output_key],
-            depends_on=[id_map.get(dep_id, dep_id) for dep_id in task.depends_on],
+            id=normalized_ids[index],
+            output_key=normalized_output_keys[index],
+            depends_on=[canonical_id_map.get(dep_id, dep_id) for dep_id in task.depends_on],
             system_prompt_template=template,
         ))
 
     normalized_final_output_keys = [
-        output_key_map.get(output_key, output_key)
+        canonical_output_key_map.get(output_key, output_key)
         for output_key in final_output_keys
     ]
     return normalized_tasks, normalized_final_output_keys
@@ -691,12 +695,11 @@ def _parse_task_plan(
         if final_output_keys_override is not None
         else list(data["final_output_keys"])
     )
-    if preserved_tasks:
-        tasks, effective_final_output_keys = _normalize_suffix_tasks(
-            preserved_tasks,
-            tasks,
-            effective_final_output_keys,
-        )
+    tasks, effective_final_output_keys = _normalize_suffix_tasks(
+        preserved_tasks,
+        tasks,
+        effective_final_output_keys,
+    )
 
     merged_tasks = preserved_tasks + tasks
     plan = TaskPlan(

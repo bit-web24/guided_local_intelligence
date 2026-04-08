@@ -117,3 +117,15 @@ def test_optional_args_not_required():
     args = resolve_tool_args(tool, task, context)
     assert args["query"] == "FastAPI tutorial"
     assert "limit" not in args     # optional, not provided, not an error
+
+
+def test_normalizes_accidental_wrapped_quotes_in_string_args():
+    tool = _make_tool("search", required=["query"])
+    task = _make_task(
+        mcp_tools=["search"],
+        mcp_tool_args={"search": {"query": "{q}"}},
+    )
+    context = {"q": '"current date and year"'}
+
+    args = resolve_tool_args(tool, task, context)
+    assert args["query"] == "current date and year"

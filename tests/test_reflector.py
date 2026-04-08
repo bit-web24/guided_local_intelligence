@@ -193,6 +193,28 @@ class TestReflectTask:
         assert result.passed is True
         assert "defaulting to PASS" in result.reason
 
+    @pytest.mark.asyncio
+    async def test_non_code_task_uses_deterministic_reflection(self):
+        task = _make_task(anchor=AnchorType.JSON, output='{"date":"2026-04-08"}')
+        with patch("adp.stages.reflector.call_local_async") as mock_local:
+            result = await reflect_task(task, use_cloud=False)
+        assert result.passed is True
+        assert result.reason == "PASS"
+        mock_local.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_code_no_output_false_negative_is_ignored_when_output_present(self):
+        task = _make_task(
+            anchor=AnchorType.CODE,
+            output="def f():\n    return 1\n",
+        )
+        with patch(
+            "adp.stages.reflector.call_local_async",
+            return_value="Verdict: FAIL — no output provided",
+        ):
+            result = await reflect_task(task, use_cloud=False)
+        assert result.passed is True
+
 
 class TestReflectPlan:
     @pytest.mark.asyncio
@@ -228,6 +250,21 @@ class TestReflectPlan:
 
         assert len(reflected) == 1
         assert reflected[0] == ("t1", True)
+
+    @pytest.mark.asyncio
+    async def test_reflect_plan_recovers_missing_task_output_from_context(self):
+        t1 = _make_task("t1", status=TaskStatus.DONE, output=None)
+        t1.output_key = "date_json"
+        plan = TaskPlan(tasks=[t1], final_output_keys=[], output_filenames=[])
+
+        with patch(
+            "adp.stages.reflector.call_local_async",
+            return_value="Verdict: PASS",
+        ):
+            results = await reflect_plan(plan, {"date_json": '{"date":"2026-04-08"}'})
+
+        assert len(results) == 1
+        assert results[0].passed is True
 
 
 class TestHelpers:

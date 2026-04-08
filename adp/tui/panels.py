@@ -315,3 +315,14 @@ def render_model_call_summary(
         if index != len(model_call_counts) - 1:
             t.append("\n")
     return t
+
+
+def render_run_summary(summary_text: str) -> Panel:
+    """Render a compact post-run summary panel."""
+    return Panel(
+        Markdown(summary_text),
+        title="[bold cyan]What Was Done[/]",
+        title_align="left",
+        border_style=th.COLOR_BORDER,
+        padding=(1, 2),
+    )

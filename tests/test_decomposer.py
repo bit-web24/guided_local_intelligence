@@ -74,6 +74,40 @@ class TestParseTaskPlan:
         with pytest.raises((KeyError, ValueError)):
             _parse_task_plan(bad)
 
+    def test_dedupes_colliding_task_ids_and_output_keys(self):
+        data = {
+            "tasks": [
+                {
+                    **VALID_PLAN_DATA["tasks"][0],
+                    "id": "t1",
+                    "output_key": "shared_value",
+                },
+                {
+                    **VALID_PLAN_DATA["tasks"][0],
+                    "id": "t1",
+                    "description": "Second task",
+                    "depends_on": ["t1"],
+                    "parallel_group": 1,
+                    "output_key": "shared_value",
+                    "system_prompt_template": (
+                        "EXAMPLES:\n"
+                        "Input: x\n"
+                        "Output: y\n"
+                        "---\n"
+                        "Prev: {shared_value}\n"
+                        "Input: {input_text}\n"
+                        "Output:"
+                    ),
+                },
+            ],
+            "final_output_keys": ["shared_value"],
+            "output_filenames": ["output.txt"],
+        }
+
+        plan = _parse_task_plan(data)
+        assert len({task.id for task in plan.tasks}) == 2
+        assert len({task.output_key for task in plan.tasks}) == 2
+
     def test_repairs_cross_task_mcp_placeholder_to_dependency_output_key(self):
         data = {
             "tasks": [

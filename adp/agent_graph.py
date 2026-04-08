@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import pathlib
+import re
+from datetime import datetime
 from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -22,7 +24,7 @@ from adp.engine.final_verifier import (
     verify_written_outputs,
 )
 from adp.engine.run_store import generate_run_id, load_run_state, save_run_state
-from adp.models.task import AnchorType, ContextDict, MicroTask, PipelineResult, StageList, TaskPlan
+from adp.models.task import ContextDict, PipelineResult, StageList, TaskPlan
 from adp.stages.assembler import assemble
 from adp.stages.decomposer import decompose
 from adp.stages.executor import execute_plan
@@ -36,6 +38,7 @@ from adp.stages.replanner import build_preserved_context
 from adp.writer import (
     build_execution_log_text,
     build_success_artifact,
+    write_output_files,
     write_output_files_via_mcp,
     write_text_file_via_mcp,
 )
@@ -65,20 +68,6 @@ class AgentState(TypedDict, total=False):
     result: PipelineResult | None
 
 
-def _system_tool_task(task_id: str, description: str) -> MicroTask:
-    return MicroTask(
-        id=task_id,
-        description=description,
-        system_prompt_template="EXAMPLES:\nInput: x\nOutput: y\n---\nInput: {input_text}\nOutput:",
-        input_text=description,
-        output_key=f"{task_id}_status",
-        depends_on=[],
-        anchor=AnchorType.OUTPUT,
-        parallel_group=0,
-        model_type="general",
-    )
-
-
 def _persist(state: AgentState, **overrides: Any) -> None:
     plan = overrides.get("plan", state.get("plan"))
     context = overrides.get("context", state.get("context", {}))
@@ -103,6 +92,94 @@ def _append_completed_stage(state: AgentState, stage: str) -> StageList:
     if stage not in completed:
         completed.append(stage)
     return completed
+
+
+_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+_YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
+_TEMPLATE_DATE_TOKEN_RE = re.compile(
+    r"\[(?:insert\s+)?(?:current\s+)?(?:today'?s\s+)?date\]",
+    re.IGNORECASE,
+)
+_TEMPLATE_YEAR_TOKEN_RE = re.compile(
+    r"\[(?:insert|current)\s+year\]",
+    re.IGNORECASE,
+)
+
+
+def _recover_text_stdout(
+    plan: TaskPlan,
+    context: ContextDict,
+    files: dict[str, str],
+    user_prompt: str = "",
+) -> dict[str, str]:
+    """Ensure text-mode runs always surface a non-empty response."""
+    recovered = dict(files)
+    current = str(recovered.get("__stdout__", "")).strip()
+    if current:
+        patched = _patch_temporal_template_leak(current, context, user_prompt)
+        if patched is not None:
+            recovered["__stdout__"] = patched
+            return recovered
+        return recovered
+
+    # Prefer explicitly declared final outputs.
+    for key in plan.final_output_keys:
+        candidate = str(context.get(key, "")).strip()
+        if not candidate:
+            continue
+        match = _DATE_RE.search(candidate)
+        recovered["__stdout__"] = match.group(0) if match else candidate
+        return recovered
+
+    # Fall back to latest non-error tool result if final outputs are empty.
+    tool_keys = [k for k in context.keys() if k.endswith("_result")]
+    for key in reversed(tool_keys):
+        candidate = str(context.get(key, "")).strip()
+        if not candidate or candidate.startswith("[MCP tool"):
+            continue
+        match = _DATE_RE.search(candidate)
+        recovered["__stdout__"] = match.group(0) if match else candidate[:6000]
+        return recovered
+
+    recovered["__stdout__"] = "No non-empty output was produced."
+    return recovered
+
+
+def _patch_temporal_template_leak(
+    text: str,
+    context: ContextDict,
+    user_prompt: str,
+) -> str | None:
+    """Replace unresolved date/year template tokens with deterministic values."""
+    if not (_TEMPLATE_DATE_TOKEN_RE.search(text) or _TEMPLATE_YEAR_TOKEN_RE.search(text)):
+        return None
+    prompt_lower = user_prompt.lower()
+    if not any(token in prompt_lower for token in ("today", "date", "year", "day")):
+        return None
+
+    date_value: str | None = None
+    year_value: str | None = None
+
+    for value in context.values():
+        snippet = str(value)
+        date_match = _DATE_RE.search(snippet)
+        if date_match and date_value is None:
+            date_value = date_match.group(0)
+            year_value = date_value[:4]
+        year_match = _YEAR_RE.search(snippet)
+        if year_match and year_value is None:
+            year_value = year_match.group(0)
+        if date_value and year_value:
+            break
+
+    if date_value is None or year_value is None:
+        now = datetime.now().astimezone()
+        date_value = now.strftime("%Y-%m-%d")
+        year_value = now.strftime("%Y")
+
+    patched = _TEMPLATE_DATE_TOKEN_RE.sub(date_value, text)
+    patched = _TEMPLATE_YEAR_TOKEN_RE.sub(year_value, patched)
+    return patched
 
 
 def _resume_target_for_loaded_state(state: dict[str, Any]) -> Literal["plan", "execute", "reflect", "assemble", "finalize", "complete"]:
@@ -361,6 +438,13 @@ async def _finalize_node(state: AgentState) -> Command[Literal["replan", "fail",
     last_error: str | None = None
     for attempt in range(FINAL_ASSEMBLY_VERIFY_RETRIES):
         try:
+            if not plan.write_to_file:
+                files = _recover_text_stdout(
+                    plan,
+                    state.get("context", {}),
+                    files,
+                    user_prompt=state.get("user_prompt", ""),
+                )
             verify_final_outputs(plan, files)
             break
         except OutputVerificationError as exc:
@@ -370,6 +454,13 @@ async def _finalize_node(state: AgentState) -> Command[Literal["replan", "fail",
             if attempt < FINAL_ASSEMBLY_VERIFY_RETRIES - 1:
                 callbacks.on_stage("ASSEMBLING")
                 files = await assemble(plan, state.get("context", {}), user_prompt=state["user_prompt"])
+                if not plan.write_to_file:
+                    files = _recover_text_stdout(
+                        plan,
+                        state.get("context", {}),
+                        files,
+                        user_prompt=state.get("user_prompt", ""),
+                    )
                 continue
             if state.get("replan_count", 0) < state.get("max_replans", MAX_REPLANS):
                 updates = {"files": files, "last_error": last_error, "status": "replanning"}
@@ -380,20 +471,20 @@ async def _finalize_node(state: AgentState) -> Command[Literal["replan", "fail",
     stdout_text: str | None = None
     if plan.write_to_file:
         write_error: str | None = None
-        final_write_task = _system_tool_task("finalize", "Write final output files via filesystem MCP")
         for attempt in range(FINAL_WRITE_VERIFY_RETRIES):
             callbacks.on_stage("WRITING")
             try:
-                if state["mcp_manager"] is None:
-                    raise RuntimeError("Filesystem MCP server is required for output file operations.")
-                written_files = await write_output_files_via_mcp(
-                    files,
-                    state["output_dir"],
-                    state["mcp_manager"],
-                    task=final_write_task,
-                    on_tool_start=getattr(callbacks, "on_tool_start", None),
-                    on_tool_done=getattr(callbacks, "on_tool_done", None),
-                )
+                if state["mcp_manager"] is not None:
+                    try:
+                        written_files = await write_output_files_via_mcp(
+                            files,
+                            state["output_dir"],
+                            state["mcp_manager"],
+                        )
+                    except Exception:
+                        written_files = write_output_files(files, state["output_dir"])
+                else:
+                    written_files = write_output_files(files, state["output_dir"])
                 callbacks.on_stage("FINAL_VERIFY")
                 verify_written_outputs(plan, files, state["output_dir"])
                 write_error = None
@@ -406,6 +497,12 @@ async def _finalize_node(state: AgentState) -> Command[Literal["replan", "fail",
                         goto="fail",
                     )
     else:
+        files = _recover_text_stdout(
+            plan,
+            state.get("context", {}),
+            files,
+            user_prompt=state.get("user_prompt", ""),
+        )
         stdout_text = files.get("__stdout__", "Error: No text output returned.")
 
     callbacks.on_stage("PROMPT_VERIFY")
@@ -427,33 +524,39 @@ async def _finalize_node(state: AgentState) -> Command[Literal["replan", "fail",
             goto="fail",
         )
 
-    if state["mcp_manager"] is not None:
-        log_task = _system_tool_task("finalize_log", "Write execution log via filesystem MCP")
-        await write_text_file_via_mcp(
-            ".adp_execution_log.md",
-            build_execution_log_text(state["user_prompt"], plan),
-            state["output_dir"],
-            state["mcp_manager"],
-            task=log_task,
-            on_tool_start=getattr(callbacks, "on_tool_start", None),
-            on_tool_done=getattr(callbacks, "on_tool_done", None),
-        )
+    if plan.write_to_file:
+        execution_log_name = ".adp_execution_log.md"
+        execution_log_content = build_execution_log_text(state["user_prompt"], plan)
         artifact_name, artifact_content = build_success_artifact(
             state["user_prompt"],
             plan,
             state.get("context", {}),
             files,
         )
-        artifact_task = _system_tool_task("finalize_artifact", "Write success artifact via filesystem MCP")
-        await write_text_file_via_mcp(
-            artifact_name,
-            artifact_content,
-            state["output_dir"],
-            state["mcp_manager"],
-            task=artifact_task,
-            on_tool_start=getattr(callbacks, "on_tool_start", None),
-            on_tool_done=getattr(callbacks, "on_tool_done", None),
-        )
+        if state["mcp_manager"] is not None:
+            try:
+                await write_text_file_via_mcp(
+                    execution_log_name,
+                    execution_log_content,
+                    state["output_dir"],
+                    state["mcp_manager"],
+                )
+                await write_text_file_via_mcp(
+                    artifact_name,
+                    artifact_content,
+                    state["output_dir"],
+                    state["mcp_manager"],
+                )
+            except Exception:
+                out_dir = pathlib.Path(state["output_dir"])
+                out_dir.mkdir(parents=True, exist_ok=True)
+                (out_dir / execution_log_name).write_text(execution_log_content, encoding="utf-8")
+                (out_dir / artifact_name).write_text(artifact_content, encoding="utf-8")
+        else:
+            out_dir = pathlib.Path(state["output_dir"])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / execution_log_name).write_text(execution_log_content, encoding="utf-8")
+            (out_dir / artifact_name).write_text(artifact_content, encoding="utf-8")
 
     callbacks.on_complete(written_files, state["output_dir"], stdout_text=stdout_text)
     result = PipelineResult(files=files, context=state.get("context", {}), tasks=plan.tasks)

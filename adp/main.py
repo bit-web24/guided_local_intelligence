@@ -7,7 +7,7 @@ Arguments:
     PROMPT    Task prompt (omit for interactive TUI mode)
 
 Options:
-    --output  -o  PATH   Output directory  [default: ./adp_output]
+    --output  -o  PATH   Output directory  [default: ./output]
     --model   -m  TEXT   Override both local Ollama models
     --cloud-model TEXT   Override the cloud/planner model
     --coder-model TEXT   Override the local coder model
@@ -38,7 +38,9 @@ from adp.engine.clarifier import (
     revise_clarified_prompt_sync,
 )
 from adp.engine.call_stats import reset_model_call_counts
+from adp.engine.tool_call_log import reset_tool_call_log
 from adp.engine.local_client import check_ollama_connection
+from adp.engine.quick_answers import maybe_answer_simple_temporal_prompt
 from adp.models.task import PipelineResult
 from adp.tui.app import TUICallbacks, interactive_loop, make_plain_callbacks, run_with_live
 from adp.tui.input_handler import get_user_input
@@ -73,6 +75,17 @@ async def run_pipeline_async(
     1. decompose()  → in stages/decomposer.py
     2. assemble()   → in stages/assembler.py
     """
+    if resume_run_id is None:
+        quick_answer = maybe_answer_simple_temporal_prompt(user_prompt)
+        if quick_answer is not None:
+            callbacks.on_stage("FAST_PATH")
+            callbacks.on_complete([], output_dir, stdout_text=quick_answer)
+            return PipelineResult(
+                files={"__stdout__": quick_answer},
+                context={"fast_path": "simple_temporal"},
+                tasks=[],
+            )
+
     mcp_config = load_mcp_config()
 
     async with MCPClientManager() as mcp_manager:
@@ -106,6 +119,7 @@ def run_pipeline(
     """
     import anyio
     reset_model_call_counts()
+    reset_tool_call_log()
     return anyio.run(
         partial(run_pipeline_async, user_prompt, output_dir, callbacks, debug, resume_run_id),
         backend="asyncio",

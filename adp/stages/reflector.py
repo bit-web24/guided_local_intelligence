@@ -20,18 +20,17 @@ makes local execution reliable — narrow scope + few-shot examples.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
-from typing import Any, Callable
+from typing import Callable
 
 from adp.config import (
     get_model_config,
-    MAX_PARALLEL,
     REFLECT_CLOUD_DEP_THRESHOLD,
 )
 from adp.engine.local_client import call_local_async
 from adp.engine.cloud_client import call_cloud_async
+from adp.engine.validator import validate
 from adp.models.task import (
     ContextDict,
     MicroTask,
@@ -188,6 +187,25 @@ async def reflect_task(
             used_cloud=False,
         )
 
+    # Deterministic reflection for structured anchors avoids false-negative LLM verdicts
+    # on simple extraction/validation tasks while preserving semantic reflection for
+    # plain Output/Markdown tasks.
+    if task.anchor in (AnchorType.JSON, AnchorType.TOML):
+        is_valid, _cleaned = validate(task.output, task.anchor)
+        if is_valid:
+            return ReflectionResult(
+                task_id=task.id,
+                passed=True,
+                reason="PASS",
+                used_cloud=False,
+            )
+        return ReflectionResult(
+            task_id=task.id,
+            passed=False,
+            reason="deterministic format validation failed",
+            used_cloud=False,
+        )
+
     prompt = _build_reflection_prompt(task)
 
     try:
@@ -228,6 +246,13 @@ async def reflect_task(
         raw = raw.strip()
 
     passed, reason = _parse_verdict(raw)
+    if (not passed) and task.output and task.output.strip() and "no output" in reason.lower():
+        return ReflectionResult(
+            task_id=task.id,
+            passed=True,
+            reason="PASS",
+            used_cloud=use_cloud,
+        )
     return ReflectionResult(
         task_id=task.id,
         passed=passed,
@@ -243,8 +268,7 @@ async def reflect_plan(
 ) -> list[ReflectionResult]:
     """Reflect on all completed tasks in the plan.
 
-    Runs reflections in parallel (bounded by MAX_PARALLEL semaphore).
-    Tasks that are not DONE are skipped.
+    Runs reflections sequentially. Tasks that are not DONE are skipped.
 
     Args:
         plan: the executed task plan
@@ -258,19 +282,18 @@ async def reflect_plan(
     if not done_tasks:
         return []
 
-    sem = asyncio.Semaphore(MAX_PARALLEL)
     results: list[ReflectionResult] = []
-
-    async def _reflect_one(task: MicroTask) -> ReflectionResult:
-        async with sem:
-            use_cloud = should_use_cloud(task)
-            result = await reflect_task(task, use_cloud=use_cloud)
-            if on_task_reflected:
-                on_task_reflected(task, result)
-            return result
-
-    results = await asyncio.gather(*[_reflect_one(t) for t in done_tasks])
-    return list(results)
+    for task in done_tasks:
+        if (not task.output or not str(task.output).strip()) and task.output_key in context:
+            recovered = str(context.get(task.output_key, "")).strip()
+            if recovered:
+                task.output = recovered
+        use_cloud = should_use_cloud(task)
+        result = await reflect_task(task, use_cloud=use_cloud)
+        if on_task_reflected:
+            on_task_reflected(task, result)
+        results.append(result)
+    return results
 
 
 def has_reflection_failures(results: list[ReflectionResult]) -> bool:

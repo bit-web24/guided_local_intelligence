@@ -11,6 +11,7 @@ glue that runs in the Executor before the local model call.
 """
 from __future__ import annotations
 
+import json
 import re
 
 from adp.mcp.registry import MCPTool
@@ -58,7 +59,8 @@ def resolve_tool_args(
     # Step 3: Resolve {placeholder} patterns in all string values
     for key, value in args.items():
         if isinstance(value, str):
-            args[key] = _fill_placeholders(value, context)
+            resolved = _fill_placeholders(value, context)
+            args[key] = _normalize_string_arg(resolved)
 
     # Step 4: Ensure all required args are present (raise early if missing)
     missing = [r for r in required if r not in args]
@@ -82,3 +84,20 @@ def _fill_placeholders(template: str, context: ContextDict) -> str:
         return context.get(key, m.group(0))   # leave unchanged if not found
 
     return re.sub(r"\{(\w+)\}", _replace, template)
+
+
+def _normalize_string_arg(value: str) -> str:
+    """Normalize string args that are accidental JSON-encoded strings."""
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+        unquoted = text[1:-1].strip()
+        if unquoted:
+            return unquoted
+    if text.startswith('"') and text.endswith('"'):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, str):
+                return parsed.strip() or parsed
+        except Exception:
+            return text
+    return text

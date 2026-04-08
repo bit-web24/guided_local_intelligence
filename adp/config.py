@@ -74,7 +74,10 @@ LOCAL_TEMPERATURE = 0.0     # always 0.0 for local — determinism is mandatory
 CLOUD_TEMPERATURE = 0.2     # slight creativity for decomposition only
 LOCAL_TIMEOUT = 120         # seconds per local model call
 CLOUD_TIMEOUT = 180         # seconds per cloud model call (larger model, bigger output)
-MAX_PARALLEL = 6            # max concurrent local model calls
+EXECUTION_MODE = os.getenv("EXECUTION_MODE", "sequential").strip().lower()
+# Sequential is the default orchestration mode for local Ollama pipelines.
+# Parallel mode can be re-enabled explicitly with EXECUTION_MODE=parallel.
+MAX_PARALLEL = int(os.getenv("MAX_PARALLEL", "1" if EXECUTION_MODE == "sequential" else "6"))
 
 # ---------------------------------------------------------------------------
 # TUI
@@ -85,8 +88,10 @@ MAX_HISTORY = 500
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
-DEFAULT_OUTPUT_DIR = "./adp_output"
+DEFAULT_OUTPUT_DIR = "./output"
 RUN_STATE_DIRNAME = ".gli_runs"
+RUN_STATE_INLINE_CONTEXT_MAX_CHARS = int(os.getenv("RUN_STATE_INLINE_CONTEXT_MAX_CHARS", "40000"))
+RUN_STATE_CONTEXT_PREVIEW_CHARS = int(os.getenv("RUN_STATE_CONTEXT_PREVIEW_CHARS", "500"))
 
 # ---------------------------------------------------------------------------
 # Reflection (per-task semantic validation between EXECUTE and ASSEMBLE)

@@ -1,0 +1,14 @@
+{
+  "run_id": "925709ca",
+  "user_prompt": "Search the web to fetch today's date and year and return the result in plain text format.",
+  "status": "initialized",
+  "completed_stages": [],
+  "replan_count": 0,
+  "max_replans": 2,
+  "last_error": null,
+  "updated_at": "2026-04-08T15:39:17.412383",
+  "plan": null,
+  "context": {},
+  "context_spilled": false,
+  "files": {}
+}

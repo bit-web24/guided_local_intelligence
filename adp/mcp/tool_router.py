@@ -62,6 +62,10 @@ class RoutedToolCall:
     arguments: dict
 
 
+_ROUTER_MAX_CONTEXT_KEYS = 24
+_ROUTER_MAX_ATTEMPTS = 2
+
+
 def _truncate(value: str, limit: int = 400) -> str:
     value = value.strip()
     if len(value) <= limit:
@@ -70,11 +74,8 @@ def _truncate(value: str, limit: int = 400) -> str:
 
 
 def _format_context(task: MicroTask, context: ContextDict) -> str:
-    relevant_keys = list(dict.fromkeys(
-        [task.output_key]
-        + task.depends_on
-        + list(context.keys())
-    ))
+    relevant_keys = list(dict.fromkeys([task.output_key] + list(context.keys())))
+    relevant_keys = relevant_keys[:_ROUTER_MAX_CONTEXT_KEYS]
     lines: list[str] = []
     for key in relevant_keys:
         if key not in context:
@@ -126,25 +127,38 @@ async def route_task_tools(
         f"Planner defaults:\n{_planner_defaults(task)}\n"
     )
 
-    try:
-        raw = await call_local_async(
-            system_prompt=system_prompt,
-            input_text="Return tool call JSON only.",
-            anchor_str=AnchorType.JSON.value,
-            model_name=model_name,
-            stage_name="tool_router",
-        )
-        extracted = extract_after_anchor(raw, AnchorType.JSON)
-        is_valid, cleaned = validate(extracted, AnchorType.JSON)
-        if not is_valid:
+    data: dict | None = None
+    prompt_input = "Return tool call JSON only."
+    for _attempt in range(_ROUTER_MAX_ATTEMPTS):
+        try:
+            raw = await call_local_async(
+                system_prompt=system_prompt,
+                input_text=prompt_input,
+                anchor_str=AnchorType.JSON.value,
+                model_name=model_name,
+                stage_name="tool_router",
+            )
+            extracted = extract_after_anchor(raw, AnchorType.JSON)
+            is_valid, cleaned = validate(extracted, AnchorType.JSON)
+            if not is_valid:
+                prompt_input = (
+                    "Your last output was invalid JSON. Return ONLY "
+                    '{"calls":[{"tool":"name","arguments":{...}}]}.'
+                )
+                continue
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict) and isinstance(parsed.get("calls"), list):
+                data = parsed
+                break
+            prompt_input = (
+                "Your last output missed the calls array. Return ONLY "
+                '{"calls":[{"tool":"name","arguments":{...}}]}.'
+            )
+        except Exception:
             return None
-        data = json.loads(cleaned)
-    except Exception:
+    if data is None:
         return None
-
-    calls = data.get("calls")
-    if not isinstance(calls, list):
-        return None
+    calls = data.get("calls", [])
 
     routed_calls: list[RoutedToolCall] = []
     seen_tools: set[str] = set()
@@ -160,7 +174,16 @@ async def route_task_tools(
             or not isinstance(arguments, dict)
         ):
             continue
+        tool = tool_registry.get(tool_name)
+        if tool is None:
+            continue
+        # Merge FunctionGemma output with planner defaults to keep required args.
+        merged_args = dict(task.mcp_tool_args.get(tool_name, {}))
+        merged_args.update(arguments)
+        required = set(tool.input_schema.get("required", []))
+        if any(req not in merged_args for req in required):
+            continue
         seen_tools.add(tool_name)
-        routed_calls.append(RoutedToolCall(tool=tool_name, arguments=arguments))
+        routed_calls.append(RoutedToolCall(tool=tool_name, arguments=merged_args))
 
     return routed_calls or None

@@ -29,7 +29,8 @@ def get_completed_tasks(plan: TaskPlan) -> list[MicroTask]:
 
 
 def build_preserved_context(plan: TaskPlan, context: ContextDict) -> ContextDict:
-    """Keep only outputs produced by preserved completed tasks."""
+    """Keep completed outputs and their task-scoped tool results."""
+    completed_ids = {task.id for task in get_completed_tasks(plan)}
     completed_output_keys = {
         task.output_key
         for task in get_completed_tasks(plan)
@@ -38,6 +39,10 @@ def build_preserved_context(plan: TaskPlan, context: ContextDict) -> ContextDict
         key: value
         for key, value in context.items()
         if key in completed_output_keys
+        or (
+            key.endswith("_result")
+            and any(key.startswith(f"{task_id}_") for task_id in completed_ids)
+        )
     }
 
 

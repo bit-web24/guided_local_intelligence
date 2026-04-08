@@ -24,9 +24,11 @@ For typical ADP workloads (2-5 tool calls per pipeline run, each taking
 from __future__ import annotations
 
 import logging
+import json
 from typing import Any
 
 from adp.config import MCP_MAX_TOOL_RESULT_CHARS
+from adp.engine.tool_call_log import append_tool_call_log
 from adp.mcp.config import MCPServerConfig
 from adp.mcp.registry import MCPTool, ToolRegistry
 
@@ -155,24 +157,56 @@ class MCPClientManager:
         except ImportError as e:
             raise RuntimeError(f"mcp package not available: {e}") from e
 
-        transport_cm = self._make_transport(
-            cfg, StdioServerParameters, stdio_client, sse_client
-        )
-        async with transport_cm as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                response = await session.call_tool(tool_name, arguments=arguments)
+        try:
+            transport_cm = self._make_transport(
+                cfg, StdioServerParameters, stdio_client, sse_client
+            )
+            async with transport_cm as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    response = await session.call_tool(tool_name, arguments=arguments)
+        except Exception as exc:
+            append_tool_call_log(
+                tool_name=tool_name,
+                arguments=arguments,
+                error=str(exc),
+            )
+            raise
 
         parts: list[str] = []
         for item in response.content:
             parts.append(item.text if hasattr(item, "text") else str(item))
         raw = "\n".join(parts)
 
+        if getattr(response, "isError", False):
+            message = raw or f"MCP tool '{tool_name}' returned an error response."
+            append_tool_call_log(
+                tool_name=tool_name,
+                arguments=arguments,
+                error=message,
+            )
+            raise RuntimeError(message)
+
+        if tool_name == "search":
+            search_error = _extract_search_failure(raw)
+            if search_error is not None:
+                append_tool_call_log(
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    error=search_error,
+                )
+                raise RuntimeError(search_error)
+
         if len(raw) > MCP_MAX_TOOL_RESULT_CHARS:
             raw = (
                 raw[:MCP_MAX_TOOL_RESULT_CHARS]
                 + f"\n... [truncated at {MCP_MAX_TOOL_RESULT_CHARS} chars]"
             )
+        append_tool_call_log(
+            tool_name=tool_name,
+            arguments=arguments,
+            output=raw,
+        )
         return raw
 
     # ------------------------------------------------------------------
@@ -201,3 +235,20 @@ class MCPClientManager:
                 f"Unknown transport '{cfg.transport}' for server '{cfg.name}'. "
                 "Use 'stdio' or 'sse'."
             )
+
+
+def _extract_search_failure(raw: str) -> str | None:
+    """Return a semantic error for unusable search results, else None."""
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    failures = payload.get("partialFailures")
+    total_results = payload.get("totalResults")
+    if total_results == 0 and isinstance(failures, list) and failures:
+        first = failures[0] if isinstance(failures[0], dict) else {}
+        message = str(first.get("message") or "search returned zero results with upstream failure")
+        return f"Search failed: {message}"
+    return None

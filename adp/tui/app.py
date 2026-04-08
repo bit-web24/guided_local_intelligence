@@ -131,6 +131,7 @@ _render_state: dict = {
     "streamed_output": "",
     "activity": [],
     "tool_history": [],
+    "run_summary": "",
     "stage": "IDLE",
     "written_files": [],
     "output_dir": "",
@@ -141,6 +142,38 @@ _render_state: dict = {
 
 _MAX_ACTIVITY_ITEMS = 12
 _MAX_TOOL_HISTORY_ITEMS = 20
+
+
+def _build_run_summary(tasks: list[MicroTask], tool_history: list[str]) -> str:
+    """Summarize execution outcomes and tool usage."""
+    if not tasks:
+        return "Run Summary\n- Fast path response returned (no planned tasks executed)."
+
+    total = len(tasks)
+    done = sum(1 for task in tasks if task.status == TaskStatus.DONE)
+    failed = sum(1 for task in tasks if task.status == TaskStatus.FAILED)
+    skipped = sum(1 for task in tasks if task.status == TaskStatus.SKIPPED)
+
+    tool_calls: list[str] = []
+    for entry in tool_history:
+        if " call: " in entry:
+            tool_calls.append(entry.split(" call: ", 1)[1].strip())
+
+    lines = [
+        "Run Summary",
+        f"- Tasks: {done}/{total} done, {failed} failed, {skipped} skipped.",
+    ]
+    if tool_calls:
+        unique_tools = sorted(set(tool_calls))
+        lines.append(
+            f"- Tools called: {len(tool_calls)} call(s) across {len(unique_tools)} tool(s): "
+            + ", ".join(unique_tools)
+            + "."
+        )
+    else:
+        lines.append("- Tools called: none.")
+
+    return "\n".join(lines)
 
 
 def _update_state(**kwargs) -> None:
@@ -238,12 +271,17 @@ def make_tui_callbacks() -> TUICallbacks:
         append_activity(f"{task.id} reflected{cloud_tag}: {verdict}")
 
     def on_complete(written: list[tuple[str, int]], output_dir: str, stdout_text: str | None = None) -> None:
+        summary = _build_run_summary(
+            list(_render_state.get("tasks", [])),
+            list(_render_state.get("tool_history", [])),
+        )
         _update_state(
             stage="DONE",
             written_files=written,
             output_dir=output_dir,
             stdout_text=stdout_text,
             output_filenames=[filename for filename, _size in written],
+            run_summary=summary,
         )
         append_activity("Pipeline complete")
 
@@ -268,10 +306,15 @@ def make_tui_callbacks() -> TUICallbacks:
 
 def make_plain_callbacks() -> TUICallbacks:
     """Create callbacks that just print to stdout (--no-tui mode)."""
+    tracked_tasks: list[MicroTask] = []
+    tool_history: list[str] = []
+
     def on_stage(stage: str) -> None:
         console.print(f"[bold magenta][{stage}][/]")
 
     def on_plan_ready(plan: TaskPlan) -> None:
+        tracked_tasks.clear()
+        tracked_tasks.extend(plan.tasks)
         console.print(f"[cyan]Plan: {len(plan.tasks)} tasks → {plan.output_filenames}[/]")
 
     def on_decomposition_retry(attempt: int, reason: str) -> None:
@@ -290,9 +333,11 @@ def make_plain_callbacks() -> TUICallbacks:
         console.print(f"  [red]{icon} {task.id}[/] {task.error or 'failed'}")
 
     def on_tool_start(task: MicroTask, tool_name: str) -> None:
+        tool_history.append(f"{task.id} call: {tool_name}")
         console.print(f"  [cyan]↺ tool[/] {task.id} → {tool_name}")
 
     def on_tool_done(task: MicroTask, tool_name: str, ok: bool, detail: str | None) -> None:
+        tool_history.append(f"{task.id} {'done' if ok else 'failed'}: {tool_name}")
         if ok:
             console.print(f"  [green]✓ tool[/] {task.id} → {tool_name}")
         else:
@@ -306,6 +351,7 @@ def make_plain_callbacks() -> TUICallbacks:
 
     def on_complete(written: list[tuple[str, int]], output_dir: str, stdout_text: str | None = None) -> None:
         console.print("\n[bold green]Done![/]")
+        console.print(panels.render_run_summary(_build_run_summary(tracked_tasks, tool_history)))
         if stdout_text:
             from rich.markdown import Markdown
             console.print(Markdown(stdout_text))
@@ -406,6 +452,7 @@ def run_with_live(
         streamed_output="",
         activity=[],
         tool_history=[],
+        run_summary="",
         stage="IDLE",
         written_files=[],
         output_dir=output_dir,
@@ -451,6 +498,8 @@ def run_with_live(
     # Print completion summary outside Live context (non-live rich.print)
     state = _read_state()
     if state.get("stdout_text"):
+        if state.get("run_summary"):
+            console.print(panels.render_run_summary(state["run_summary"]))
         console.print(panels.render_text_response(state["stdout_text"]))
         console.print(
             panels.render_model_call_summary(
@@ -459,6 +508,8 @@ def run_with_live(
             )
         )
     elif state["written_files"]:
+        if state.get("run_summary"):
+            console.print(panels.render_run_summary(state["run_summary"]))
         console.print(panels.render_completion_summary(
             state["written_files"],
             state["output_dir"],
