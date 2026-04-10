@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import logging
 import json
+import re
+from pathlib import Path
 from typing import Any
 
 from adp.config import MCP_MAX_TOOL_RESULT_CHARS
@@ -90,6 +92,7 @@ class MCPClientManager:
 
         for cfg in configs:
             try:
+                _prepare_filesystem_server_roots(cfg)
                 tools = await self._discover_tools(
                     cfg, StdioServerParameters, stdio_client, sse_client, ClientSession
                 )
@@ -158,6 +161,12 @@ class MCPClientManager:
             raise RuntimeError(f"mcp package not available: {e}") from e
 
         try:
+            if tool_name == "search":
+                query_value = str(arguments.get("query", "")).strip()
+                if re.search(r"\{[^{}]+\}", query_value):
+                    raise RuntimeError(
+                        f"Search failed: unresolved query placeholder '{query_value}'."
+                    )
             transport_cm = self._make_transport(
                 cfg, StdioServerParameters, stdio_client, sse_client
             )
@@ -247,8 +256,36 @@ def _extract_search_failure(raw: str) -> str | None:
         return None
     failures = payload.get("partialFailures")
     total_results = payload.get("totalResults")
+    results = payload.get("results")
     if total_results == 0 and isinstance(failures, list) and failures:
         first = failures[0] if isinstance(failures[0], dict) else {}
         message = str(first.get("message") or "search returned zero results with upstream failure")
         return f"Search failed: {message}"
+    if total_results == 0 and isinstance(results, list) and not results:
+        return "Search failed: no results returned by the search provider."
     return None
+
+
+def _prepare_filesystem_server_roots(cfg: MCPServerConfig) -> None:
+    """Ensure filesystem MCP root directories exist before server startup."""
+    if cfg.transport != "stdio":
+        return
+    if not cfg.args:
+        return
+    package_names = {
+        "@modelcontextprotocol/server-filesystem",
+        "@modelcontextprotocol/server-filesystem@latest",
+    }
+    package_index = None
+    for idx, arg in enumerate(cfg.args):
+        if arg in package_names:
+            package_index = idx
+            break
+    if package_index is None:
+        return
+
+    root_args = cfg.args[package_index + 1 :]
+    for root in root_args:
+        if not root or root.startswith("-"):
+            continue
+        Path(root).mkdir(parents=True, exist_ok=True)

@@ -129,3 +129,27 @@ def test_normalizes_accidental_wrapped_quotes_in_string_args():
 
     args = resolve_tool_args(tool, task, context)
     assert args["query"] == "current date and year"
+
+
+def test_unwraps_json_object_string_for_same_argument_key():
+    tool = _make_tool("search", required=["query"])
+    task = _make_task(
+        mcp_tools=["search"],
+        mcp_tool_args={"search": {"query": "{q}"}},
+    )
+    context = {"q": '{"query":"today\'s date"}'}
+
+    args = resolve_tool_args(tool, task, context)
+    assert args["query"] == "today's date"
+
+
+def test_repairs_unresolved_query_placeholder_from_user_prompt_context():
+    tool = _make_tool("search", required=["query"])
+    task = _make_task(
+        mcp_tools=["search"],
+        mcp_tool_args={"search": {"query": "{search_args.query}"}},
+    )
+    context = {"__user_prompt__": "latest layoffs news today"}
+
+    args = resolve_tool_args(tool, task, context)
+    assert args["query"] == "latest layoffs news today"

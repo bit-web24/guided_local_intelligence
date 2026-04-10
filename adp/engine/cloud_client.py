@@ -10,6 +10,7 @@ import httpx
 
 from adp.config import (
     get_model_config,
+    resolve_stage_model,
     CLOUD_TEMPERATURE,
     CLOUD_TIMEOUT,
     OLLAMA_BASE_URL,
@@ -33,8 +34,9 @@ async def call_cloud_async(
     Returns the raw response string from the model.
     """
     model_config = get_model_config()
+    model_name = resolve_stage_model(stage_name, model_config.cloud)
     payload = {
-        "model": model_config.cloud,
+        "model": model_name,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
@@ -51,7 +53,7 @@ async def call_cloud_async(
             json=payload,
         )
         response.raise_for_status()
-        record_model_call(model_config.cloud, stage_name=stage_name)
+        record_model_call(model_name, stage_name=stage_name)
         data = response.json()
         return data["message"]["content"]
 
@@ -68,8 +70,9 @@ async def call_cloud_with_history(
     messages format: [{"role": "system"|"user"|"assistant", "content": "..."}]
     """
     model_config = get_model_config()
+    model_name = resolve_stage_model(stage_name, model_config.cloud)
     payload = {
-        "model": model_config.cloud,
+        "model": model_name,
         "messages": messages,
         "stream": False,
         "options": {
@@ -83,6 +86,6 @@ async def call_cloud_with_history(
             json=payload,
         )
         response.raise_for_status()
-        record_model_call(model_config.cloud, stage_name=stage_name)
+        record_model_call(model_name, stage_name=stage_name)
         data = response.json()
         return data["message"]["content"]

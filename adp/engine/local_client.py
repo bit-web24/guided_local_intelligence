@@ -10,6 +10,7 @@ import httpx
 
 from adp.config import (
     get_model_config,
+    resolve_stage_model,
     LOCAL_TEMPERATURE,
     LOCAL_TIMEOUT,
     OLLAMA_BASE_URL,
@@ -39,9 +40,10 @@ async def call_local_async(
     Returns the raw model output string (may include preamble before anchor).
     """
     effective_temp = temperature_override if temperature_override is not None else LOCAL_TEMPERATURE
+    resolved_model_name = resolve_stage_model(stage_name, model_name)
     full_prompt = f"Input: {input_text}\n{anchor_str}"
     payload = {
-        "model": model_name,
+        "model": resolved_model_name,
         "system": system_prompt,
         "prompt": full_prompt,
         "stream": False,
@@ -56,7 +58,7 @@ async def call_local_async(
             json=payload,
         )
         response.raise_for_status()
-        record_model_call(model_name, stage_name=stage_name)
+        record_model_call(resolved_model_name, stage_name=stage_name)
         return response.json()["response"]
 
 

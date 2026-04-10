@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from adp.mcp.client import MCPClientManager
+from adp.mcp.client import MCPClientManager, _prepare_filesystem_server_roots
 from adp.mcp.config import MCPServerConfig
 
 
@@ -118,3 +118,49 @@ async def test_call_tool_raises_on_semantic_search_failure(monkeypatch):
     assert kwargs["tool_name"] == "search"
     assert kwargs["arguments"] == {"query": "q"}
     assert "Search failed" in kwargs["error"]
+
+
+@pytest.mark.asyncio
+async def test_call_tool_raises_on_zero_search_results_without_partial_failures(monkeypatch):
+    manager = _manager_for_tool("search")
+    manager._make_transport = lambda *args, **kwargs: _DummyTransport()  # type: ignore[assignment]
+    _DummySession.response = SimpleNamespace(
+        content=[
+            SimpleNamespace(
+                text='{"query":"q","totalResults":0,"results":[],"partialFailures":[]}'
+            )
+        ],
+        isError=False,
+    )
+    monkeypatch.setattr("mcp.ClientSession", _DummySession)
+
+    with patch("adp.mcp.client.append_tool_call_log") as log_mock:
+        with pytest.raises(RuntimeError, match="no results"):
+            await manager.call_tool("search", {"query": "q"})
+
+    log_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_call_tool_rejects_unresolved_search_query_placeholder():
+    manager = _manager_for_tool("search")
+
+    with patch("adp.mcp.client.append_tool_call_log") as log_mock:
+        with pytest.raises(RuntimeError, match="unresolved query placeholder"):
+            await manager.call_tool("search", {"query": "{search_args.query}"})
+
+    log_mock.assert_called_once()
+
+
+def test_prepare_filesystem_server_roots_creates_missing_directories(tmp_path):
+    root_path = tmp_path / "adp_output"
+    cfg = MCPServerConfig(
+        name="filesystem",
+        transport="stdio",
+        command="npx",
+        args=["-y", "@modelcontextprotocol/server-filesystem", str(root_path)],
+    )
+
+    assert not root_path.exists()
+    _prepare_filesystem_server_roots(cfg)
+    assert root_path.exists()

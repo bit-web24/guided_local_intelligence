@@ -183,22 +183,46 @@ async def _detect_clarification_need(
     qa_pairs: list[tuple[str, str]],
     force_proceed: bool,
 ) -> dict:
+    if force_proceed:
+        return {"needs_clarification": False, "reason_label": "clarification_limit_reached"}
+
     conversation_text = _build_conversation_text(initial_prompt, qa_pairs)
     instruction = (
         "Return needs_clarification=false now because the clarification limit was reached."
         if force_proceed
         else "Decide whether one clarification is still needed."
     )
-    data = await _call_json_step(
-        system_prompt=f"{CLARIFY_NEED_PROMPT}\n\nConversation so far:\n{conversation_text}",
-        input_text=instruction,
-        stage_name="clarifier:detect",
-    )
-    if "needs_clarification" not in data:
-        raise ValueError("clarifier:detect returned invalid shape.")
-    if force_proceed:
-        return {"needs_clarification": False, "reason_label": "clarification_limit_reached"}
-    return data
+    try:
+        data = await _call_json_step(
+            system_prompt=f"{CLARIFY_NEED_PROMPT}\n\nConversation so far:\n{conversation_text}",
+            input_text=instruction,
+            stage_name="clarifier:detect",
+        )
+    except Exception:
+        return {"needs_clarification": False, "reason_label": "detect_failed"}
+
+    if not isinstance(data, dict):
+        return {"needs_clarification": False, "reason_label": "detect_invalid_shape"}
+
+    raw_flag = data.get("needs_clarification")
+    if isinstance(raw_flag, bool):
+        needs_clarification = raw_flag
+    elif isinstance(raw_flag, str):
+        lowered = raw_flag.strip().lower()
+        if lowered in {"true", "yes", "1"}:
+            needs_clarification = True
+        elif lowered in {"false", "no", "0"}:
+            needs_clarification = False
+        else:
+            needs_clarification = False
+    else:
+        needs_clarification = False
+
+    reason_label = str(data.get("reason_label", "")).strip() or "enough_information"
+    return {
+        "needs_clarification": needs_clarification,
+        "reason_label": reason_label,
+    }
 
 
 async def _generate_clarification_question(

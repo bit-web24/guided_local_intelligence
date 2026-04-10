@@ -225,8 +225,11 @@ class TestReflectPlan:
         plan = TaskPlan(tasks=[t1, t2, t3], final_output_keys=[], output_filenames=[])
 
         with patch(
-            "adp.stages.reflector.call_local_async",
-            return_value="Verdict: PASS",
+            "adp.stages.reflector.REFLECT_USE_CLOUD",
+            True,
+        ), patch(
+            "adp.stages.reflector.call_cloud_async",
+            return_value="PASS",
         ):
             results = await reflect_plan(plan, {})
 
@@ -243,8 +246,11 @@ class TestReflectPlan:
             reflected.append((task.id, result.passed))
 
         with patch(
-            "adp.stages.reflector.call_local_async",
-            return_value="Verdict: PASS",
+            "adp.stages.reflector.REFLECT_USE_CLOUD",
+            True,
+        ), patch(
+            "adp.stages.reflector.call_cloud_async",
+            return_value="PASS",
         ):
             await reflect_plan(plan, {}, on_task_reflected=on_reflected)
 
@@ -257,9 +263,9 @@ class TestReflectPlan:
         t1.output_key = "date_json"
         plan = TaskPlan(tasks=[t1], final_output_keys=[], output_filenames=[])
 
-        with patch(
-            "adp.stages.reflector.call_local_async",
-            return_value="Verdict: PASS",
+        with patch("adp.stages.reflector.REFLECT_USE_CLOUD", True), patch(
+            "adp.stages.reflector.call_cloud_async",
+            return_value="PASS",
         ):
             results = await reflect_plan(plan, {"date_json": '{"date":"2026-04-08"}'})
 

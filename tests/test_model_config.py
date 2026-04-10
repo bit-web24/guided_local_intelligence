@@ -10,6 +10,7 @@ from adp.config import (
     DEFAULT_LOCAL_GENERAL_MODEL,
     DEFAULT_LOCAL_TOOL_ROUTER_MODEL,
     get_model_config,
+    resolve_stage_model,
     set_model_config,
 )
 from adp.engine.cloud_client import call_cloud_async
@@ -122,3 +123,15 @@ class TestRuntimeModelUsage:
 
         assert "cloud-header" in header_text
         assert "coder-header | general-header" in header_text
+
+    def test_resolve_stage_model_uses_stage_specific_overrides(self, monkeypatch):
+        monkeypatch.setenv("MODEL_DECOMPOSER", "cloud-decomposer")
+        monkeypatch.setenv("MODEL_EXECUTOR_CODER", "coder-exec")
+        monkeypatch.setenv("MODEL_TOOL_ROUTER", "gemma-router")
+        monkeypatch.setenv("MODEL_REFLECTOR_CLOUD", "cloud-reflect")
+
+        assert resolve_stage_model("decomposer", "fallback") == "cloud-decomposer"
+        assert resolve_stage_model("executor:coder", "fallback") == "coder-exec"
+        assert resolve_stage_model("tool_router", "fallback") == "gemma-router"
+        assert resolve_stage_model("reflector:cloud", "fallback") == "cloud-reflect"
+        assert resolve_stage_model("unknown_stage", "fallback") == "fallback"

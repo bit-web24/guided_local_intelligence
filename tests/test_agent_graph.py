@@ -106,6 +106,37 @@ async def test_graph_replans_after_failed_execution(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_graph_does_not_replan_on_reflection_failures(tmp_path):
+    callbacks = _Callbacks()
+    plan = _make_text_plan()
+    plan.tasks[0].status = TaskStatus.DONE
+    plan.tasks[0].output = "answer"
+
+    class _R:
+        task_id = "t1"
+        passed = False
+        reason = "minor reflection mismatch"
+        used_cloud = True
+
+    with patch("adp.agent_graph.decompose", AsyncMock(return_value=plan)), \
+         patch("adp.agent_graph.execute_plan", AsyncMock(return_value={"answer": "answer"})), \
+         patch("adp.agent_graph.reflect_plan", AsyncMock(return_value=[_R()])), \
+         patch("adp.agent_graph.assemble", AsyncMock(return_value={"__stdout__": "done"})), \
+         patch("adp.agent_graph.verify_files_match_user_prompt", AsyncMock(return_value=None)), \
+         patch("adp.agent_graph.replan", AsyncMock()) as replan_mock:
+        result = await run_agent_graph(
+            user_prompt="Say hello",
+            output_dir=str(tmp_path),
+            callbacks=callbacks,
+            mcp_manager=None,
+            tool_registry=None,
+        )
+
+    assert result.files["__stdout__"] == "done"
+    assert replan_mock.await_count == 0
+
+
+@pytest.mark.asyncio
 async def test_graph_resumes_from_persisted_run_state(tmp_path):
     callbacks = _Callbacks()
     run_id = generate_run_id()
@@ -216,7 +247,7 @@ async def test_graph_resumes_from_assembled_state_without_reexecution(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_graph_does_not_report_internal_filesystem_writes_as_tools(tmp_path):
+async def test_graph_reports_internal_filesystem_writes_as_tools(tmp_path):
     callbacks = _Callbacks()
     plan = TaskPlan(
         tasks=[
@@ -262,7 +293,10 @@ async def test_graph_does_not_report_internal_filesystem_writes_as_tools(tmp_pat
             tool_registry=None,
         )
 
-    assert callbacks.tools == []
+    tool_names = [name for _task_id, name, _ok in callbacks.tools]
+    assert "create_directory" in tool_names
+    assert "write_file" in tool_names
+    assert any(task_id == "finalize" for task_id, _name, _ok in callbacks.tools)
 
 
 @pytest.mark.asyncio
@@ -323,7 +357,7 @@ async def test_graph_patches_unresolved_temporal_template_tokens(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_graph_falls_back_to_local_file_writes_when_mcp_write_fails(tmp_path):
+async def test_graph_fails_when_mcp_file_write_fails(tmp_path):
     callbacks = _Callbacks()
     plan = TaskPlan(
         tasks=[
@@ -353,16 +387,51 @@ async def test_graph_falls_back_to_local_file_writes_when_mcp_write_fails(tmp_pa
          patch("adp.agent_graph.execute_plan", AsyncMock(return_value={"markdown_content": plan.tasks[0].output})), \
          patch("adp.agent_graph.reflect_plan", AsyncMock(return_value=[])), \
          patch("adp.agent_graph.verify_files_match_user_prompt", AsyncMock(return_value=None)):
-        result = await run_agent_graph(
-            user_prompt="Write README",
-            output_dir=str(tmp_path),
-            callbacks=callbacks,
-            mcp_manager=_FailingMCP(),
-            tool_registry=None,
-        )
+        with pytest.raises(RuntimeError, match="Written output verification failed"):
+            await run_agent_graph(
+                user_prompt="Write README",
+                output_dir=str(tmp_path),
+                callbacks=callbacks,
+                mcp_manager=_FailingMCP(),
+                tool_registry=None,
+            )
 
-    assert result.files["README.md"].startswith("# Title\n\nhello")
-    assert (tmp_path / "README.md").read_text(encoding="utf-8").startswith("# Title\n\nhello")
+
+@pytest.mark.asyncio
+async def test_graph_fails_when_mcp_manager_missing_for_file_outputs(tmp_path):
+    callbacks = _Callbacks()
+    plan = TaskPlan(
+        tasks=[
+            MicroTask(
+                id="t1",
+                description="Write markdown content",
+                system_prompt_template="EXAMPLES:\nInput: x\nOutput: y\n---\nInput: {input_text}\nOutput:",
+                input_text="run",
+                output_key="markdown_content",
+                depends_on=[],
+                anchor=AnchorType.OUTPUT,
+                parallel_group=0,
+                status=TaskStatus.DONE,
+                output="# Title\n\nhello\n",
+            )
+        ],
+        final_output_keys=["markdown_content"],
+        output_filenames=["README.md"],
+        write_to_file=True,
+    )
+
+    with patch("adp.agent_graph.decompose", AsyncMock(return_value=plan)), \
+         patch("adp.agent_graph.execute_plan", AsyncMock(return_value={"markdown_content": plan.tasks[0].output})), \
+         patch("adp.agent_graph.reflect_plan", AsyncMock(return_value=[])), \
+         patch("adp.agent_graph.verify_files_match_user_prompt", AsyncMock(return_value=None)):
+        with pytest.raises(RuntimeError, match="Filesystem MCP server is required"):
+            await run_agent_graph(
+                user_prompt="Write README",
+                output_dir=str(tmp_path),
+                callbacks=callbacks,
+                mcp_manager=None,
+                tool_registry=None,
+            )
 
 
 @pytest.mark.asyncio
@@ -388,3 +457,75 @@ async def test_graph_skips_finalize_artifact_writes_for_text_mode(tmp_path):
 
     assert result.files["__stdout__"] == "hello"
     assert write_meta_mock.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_graph_forces_current_date_for_today_text_prompt(tmp_path):
+    callbacks = _Callbacks()
+    plan = _make_text_plan(output_key="answer")
+    plan.write_to_file = False
+    plan.output_filenames = []
+    plan.tasks[0].status = TaskStatus.DONE
+    plan.tasks[0].output = "stale"
+
+    with patch("adp.agent_graph.decompose", AsyncMock(return_value=plan)), \
+         patch("adp.agent_graph.execute_plan", AsyncMock(return_value={"answer": "stale"})), \
+         patch("adp.agent_graph.reflect_plan", AsyncMock(return_value=[])), \
+         patch("adp.agent_graph.verify_files_match_user_prompt", AsyncMock(return_value=None)), \
+         patch("adp.agent_graph.assemble", AsyncMock(return_value={"__stdout__": "Today is 2023."})):
+        result = await run_agent_graph(
+            user_prompt="search the web to fetch today's date and year",
+            output_dir=str(tmp_path),
+            callbacks=callbacks,
+            mcp_manager=None,
+            tool_registry=None,
+        )
+
+    from datetime import datetime
+    expected_iso = datetime.now().astimezone().strftime("%Y-%m-%d")
+    assert expected_iso in result.files["__stdout__"]
+
+
+@pytest.mark.asyncio
+async def test_graph_replaces_untrusted_source_links_with_tool_urls(tmp_path):
+    callbacks = _Callbacks()
+    plan = _make_text_plan(output_key="answer")
+    plan.write_to_file = False
+    plan.output_filenames = []
+    plan.tasks[0].status = TaskStatus.DONE
+    plan.tasks[0].output = "summary"
+
+    search_payload = (
+        '{"results":[{"url":"https://news.example.com/a"},'
+        '{"url":"https://news.example.com/b"}]}'
+    )
+    with patch("adp.agent_graph.decompose", AsyncMock(return_value=plan)), \
+         patch(
+             "adp.agent_graph.execute_plan",
+             AsyncMock(return_value={"answer": "summary", "t3_search_result": search_payload}),
+         ), \
+         patch("adp.agent_graph.reflect_plan", AsyncMock(return_value=[])), \
+         patch("adp.agent_graph.verify_files_match_user_prompt", AsyncMock(return_value=None)), \
+         patch(
+             "adp.agent_graph.assemble",
+             AsyncMock(
+                 return_value={
+                     "__stdout__": (
+                         "Layoffs update. Sources: https://example.com/article1, "
+                         "https://example.com/article2"
+                     )
+                 }
+             ),
+         ):
+        result = await run_agent_graph(
+            user_prompt="search the web to find current layoffs news and mention sources",
+            output_dir=str(tmp_path),
+            callbacks=callbacks,
+            mcp_manager=None,
+            tool_registry=None,
+        )
+
+    text = result.files["__stdout__"]
+    assert "https://example.com/article1" not in text
+    assert "https://news.example.com/a" in text
+    assert "https://news.example.com/b" in text

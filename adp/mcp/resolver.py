@@ -60,7 +60,13 @@ def resolve_tool_args(
     for key, value in args.items():
         if isinstance(value, str):
             resolved = _fill_placeholders(value, context)
-            args[key] = _normalize_string_arg(resolved)
+            normalized = _normalize_string_arg(resolved, key=key)
+            args[key] = _repair_unresolved_string_arg(
+                value=normalized,
+                key=key,
+                task=task,
+                context=context,
+            )
 
     # Step 4: Ensure all required args are present (raise early if missing)
     missing = [r for r in required if r not in args]
@@ -86,7 +92,7 @@ def _fill_placeholders(template: str, context: ContextDict) -> str:
     return re.sub(r"\{(\w+)\}", _replace, template)
 
 
-def _normalize_string_arg(value: str) -> str:
+def _normalize_string_arg(value: str, *, key: str) -> str:
     """Normalize string args that are accidental JSON-encoded strings."""
     text = value.strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
@@ -100,4 +106,45 @@ def _normalize_string_arg(value: str) -> str:
                 return parsed.strip() or parsed
         except Exception:
             return text
+    if text.startswith("{") and text.endswith("}"):
+        try:
+            parsed_obj = json.loads(text)
+            if isinstance(parsed_obj, dict):
+                key_value = parsed_obj.get(key)
+                if isinstance(key_value, str) and key_value.strip():
+                    return key_value.strip()
+                if len(parsed_obj) == 1:
+                    only_value = next(iter(parsed_obj.values()))
+                    if isinstance(only_value, str) and only_value.strip():
+                        return only_value.strip()
+        except Exception:
+            return text
     return text
+
+
+def _repair_unresolved_string_arg(
+    *,
+    value: str,
+    key: str,
+    task: MicroTask,
+    context: ContextDict,
+) -> str:
+    """Repair unresolved placeholders for common search query keys."""
+    if not re.search(r"\{[^{}]+\}", value):
+        return value
+
+    if key.lower() not in {"query", "q", "search_query"}:
+        return value
+
+    for candidate in (
+        context.get("search_query"),
+        context.get("query"),
+        context.get("__user_prompt__"),
+        task.input_text,
+        task.description,
+    ):
+        text = str(candidate or "").strip()
+        if text and not re.search(r"\{[^{}]+\}", text):
+            return text
+
+    return value

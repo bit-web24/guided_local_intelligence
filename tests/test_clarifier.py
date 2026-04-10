@@ -103,7 +103,7 @@ async def test_clarifier_forces_merge_after_max_rounds():
     assert result.clarification_turns_used == 3
     assert ask_user.await_count == 3
     stage_names = [call.kwargs["stage_name"] for call in local_mock.await_args_list] + [cloud_mock.await_args.kwargs["stage_name"]]
-    assert stage_names[-2:] == ["clarifier:detect", "clarifier:merge"]
+    assert stage_names[-2:] == ["clarifier:question", "clarifier:merge"]
 
 
 @pytest.mark.asyncio
@@ -154,3 +154,19 @@ async def test_revise_clarified_prompt_rejects_apology_meta_output():
         "create a book management api with roles, in node.js using express.js. "
         "write the files under a new directory. Additional requirement: under api/ dir"
     )
+
+
+@pytest.mark.asyncio
+async def test_clarifier_detect_invalid_shape_falls_back_without_crashing():
+    with patch(
+        "adp.engine.clarifier.call_local_async",
+        new=AsyncMock(return_value='JSON: {"question":"wrong shape"}'),
+    ):
+        result = await clarify_prompt_async(
+            "Do the task",
+            ask_user=AsyncMock(),
+        )
+
+    assert result is not None
+    assert result.clarified_prompt == "Do the task"
+    assert result.clarification_turns_used == 0

@@ -26,6 +26,7 @@ from typing import Callable
 
 from adp.config import (
     get_model_config,
+    REFLECT_USE_CLOUD,
     REFLECT_CLOUD_DEP_THRESHOLD,
 )
 from adp.engine.local_client import call_local_async
@@ -288,7 +289,7 @@ async def reflect_plan(
             recovered = str(context.get(task.output_key, "")).strip()
             if recovered:
                 task.output = recovered
-        use_cloud = should_use_cloud(task)
+        use_cloud = REFLECT_USE_CLOUD or should_use_cloud(task)
         result = await reflect_task(task, use_cloud=use_cloud)
         if on_task_reflected:
             on_task_reflected(task, result)

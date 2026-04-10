@@ -97,6 +97,8 @@ RUN_STATE_CONTEXT_PREVIEW_CHARS = int(os.getenv("RUN_STATE_CONTEXT_PREVIEW_CHARS
 # Reflection (per-task semantic validation between EXECUTE and ASSEMBLE)
 # ---------------------------------------------------------------------------
 REFLECT_ENABLED = os.getenv("REFLECT_ENABLED", "true").lower() in ("true", "1", "yes")
+# Use cloud model (gpt-oss) for reflection by default for higher semantic reliability.
+REFLECT_USE_CLOUD = os.getenv("REFLECT_USE_CLOUD", "true").lower() in ("true", "1", "yes")
 # Tasks with Code anchor + implementation verbs + >= this many deps → cloud reflection
 REFLECT_CLOUD_DEP_THRESHOLD = int(os.getenv("REFLECT_CLOUD_DEP_THRESHOLD", "2"))
 
@@ -119,3 +121,49 @@ MCP_CONFIG_PATHS = [
     os.path.join(os.getcwd(), "mcp_servers.toml"),
     os.path.expanduser("~/.config/adp/mcp_servers.toml"),
 ]
+
+
+def resolve_stage_model(stage_name: str, default_model: str) -> str:
+    """Resolve stage-specific model overrides via environment variables."""
+    stage = (stage_name or "").strip().lower()
+    if not stage:
+        return default_model
+
+    # Most specific first.
+    exact_map = {
+        "decomposer": "MODEL_DECOMPOSER",
+        "assembler": "MODEL_ASSEMBLER_CLOUD",
+        "assembler:local": "MODEL_ASSEMBLER_LOCAL",
+        "executor:coder": "MODEL_EXECUTOR_CODER",
+        "executor:general": "MODEL_EXECUTOR_GENERAL",
+        "tool_router": "MODEL_TOOL_ROUTER",
+        "reflector:cloud": "MODEL_REFLECTOR_CLOUD",
+        "reflector:local": "MODEL_REFLECTOR_LOCAL",
+        "final_prompt_verify": "MODEL_FINAL_VERIFY_CLOUD",
+        "final_prompt_verify:local_coder": "MODEL_FINAL_VERIFY_LOCAL_CODER",
+        "final_prompt_verify:local_general": "MODEL_FINAL_VERIFY_LOCAL_GENERAL",
+        "clarifier:detect": "MODEL_CLARIFIER_LOCAL",
+        "clarifier:question": "MODEL_CLARIFIER_LOCAL",
+        "clarifier:merge": "MODEL_CLARIFIER_CLOUD",
+        "clarifier:revise": "MODEL_CLARIFIER_CLOUD",
+    }
+    env_key = exact_map.get(stage)
+    if env_key:
+        override = os.getenv(env_key, "").strip()
+        if override:
+            return override
+
+    # Prefix fallback for future stage names.
+    prefix_map = [
+        ("executor:", "MODEL_EXECUTOR_GENERAL"),
+        ("reflector:", "MODEL_REFLECTOR_CLOUD"),
+        ("clarifier:", "MODEL_CLARIFIER_LOCAL"),
+    ]
+    for prefix, key in prefix_map:
+        if stage.startswith(prefix):
+            override = os.getenv(key, "").strip()
+            if override:
+                return override
+            break
+
+    return default_model
