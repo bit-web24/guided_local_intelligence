@@ -305,6 +305,7 @@ _CONFIG_VALUE_TOKENS = {
     "database_url",
     "db_url",
 }
+_UNKNOWN_PLACEHOLDERS_RE = re.compile(r"references unknown placeholders:\s*\[([^\]]+)\]")
 
 
 class DecompositionError(Exception):
@@ -352,9 +353,10 @@ async def decompose(
 
     last_error: Exception | None = None
     for attempt in range(DECOMPOSITION_MAX_RETRIES):
+        retry_temperature = CLOUD_TEMPERATURE if attempt == 0 else 0.0
         raw = await call_cloud_with_history(
             messages=messages,
-            temperature=CLOUD_TEMPERATURE,
+            temperature=retry_temperature,
             max_tokens=8192,
             stage_name="decomposer",
         )
@@ -419,6 +421,19 @@ def _build_retry_feedback(error: Exception) -> str:
         parts.append(
             "Unknown placeholders usually mean you used another task's MCP key or invented a placeholder name; use dependency output_key placeholders instead."
         )
+        match = _UNKNOWN_PLACEHOLDERS_RE.search(error_text)
+        if match:
+            placeholders = [item.strip().strip("'\"") for item in match.group(1).split(",")]
+            cleaned = [p for p in placeholders if p]
+            if cleaned:
+                parts.append(
+                    "Remove these unknown placeholders from the next plan unless they are explicitly produced by upstream tasks: "
+                    + ", ".join(cleaned)
+                    + "."
+                )
+                parts.append(
+                    "Use only placeholders that exactly match dependency output_key values and task-scoped MCP result keys."
+                )
     if "assigns MCP tools but does not reference their results" in error_text:
         parts.append(
             "Tool-bearing tasks must consume their own tool result placeholders inside the same task template."

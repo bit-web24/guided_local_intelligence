@@ -535,6 +535,16 @@ class TestDecomposeRetry:
         assert "Every task must contain 3 to 5 realistic few-shot examples" in message
         assert "missing EXAMPLES error is non-negotiable" in message
 
+    def test_retry_feedback_lists_unknown_placeholders_explicitly(self):
+        message = _build_retry_feedback(
+            DecompositionError(
+                "Task 't6' references unknown placeholders: ['day', 'month', 'year']"
+            )
+        )
+        assert "Remove these unknown placeholders" in message
+        assert "day, month, year" in message
+        assert "Use only placeholders that exactly match dependency output_key values" in message
+
     @pytest.mark.asyncio
     async def test_retry_message_injects_missing_examples_guidance(self):
         invalid_then_valid = [
@@ -565,6 +575,27 @@ class TestDecomposeRetry:
         assert "missing EXAMPLES error is non-negotiable" in retry_user_message
         assert "small local models" in retry_user_message
         assert "Return ONLY valid JSON matching the schema" in retry_user_message
+
+    @pytest.mark.asyncio
+    async def test_decompose_uses_zero_temperature_after_first_retry(self):
+        valid_json = json.dumps(VALID_PLAN_DATA)
+        temps: list[float] = []
+        call_count = 0
+
+        async def mock_call(messages, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            temps.append(kwargs["temperature"])
+            if call_count == 1:
+                return "not valid json"
+            return valid_json
+
+        with patch("adp.stages.decomposer.call_cloud_with_history", side_effect=mock_call):
+            plan = await decompose("test prompt")
+
+        assert plan.tasks[0].id == "t1"
+        assert temps[0] > 0.0
+        assert temps[1] == 0.0
 
     @pytest.mark.asyncio
     async def test_raises_after_max_retries(self):
