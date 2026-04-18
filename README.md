@@ -1,7 +1,10 @@
-# ADP — Agentic Decomposition Pipeline
+# GLI — Guided Local Intelligence
 
 A CLI tool that takes any complex prompt and produces complete, production-ready files
 by running a 3-stage pipeline entirely through **Ollama** — no external API keys required.
+
+<img width="1887" height="975" alt="Screenshot_2026-04-18_20-28-45" src="https://github.com/user-attachments/assets/2a845b1a-d0ea-434f-a017-ab2f0ec43658" />
+
 
 ## How It Works
 
