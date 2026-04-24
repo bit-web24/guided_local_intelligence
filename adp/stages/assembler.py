@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import re
 
+from adp.config import get_model_config
 from adp.engine.cloud_client import call_cloud_async
+from adp.engine.local_client import call_local_async
 from adp.models.task import ContextDict, TaskPlan
 
 # ---------------------------------------------------------------------------
@@ -23,7 +25,7 @@ software project or document. Assemble them into complete, coherent, production-
 
 RULES:
 1. Output ONLY the assembled files using the delimiter format below. No prose. No explanation.
-2. For EACH output file, use this exact format:
+2. For EACH output file, use this EXACT format with the EXACT filenames listed in OUTPUT FILES:
 
 --- FILE: filename.ext ---
 <complete file content here>
@@ -34,6 +36,11 @@ RULES:
 5. Use ONLY content from the provided fragments. Do not invent additional logic.
 6. If a fragment value is "[MISSING]", add a comment in the file noting it is missing.
 7. Add all necessary imports at the top of each file based on what the code uses.
+8. You MUST use the filenames EXACTLY as given in the OUTPUT FILES list — including any
+   subdirectory prefix (e.g. "lib/main.py", NOT "main.py").
+
+OUTPUT FILES (use these exact paths in the FILE delimiters):
+{output_filenames_text}
 
 Fragments (key → content):
 {fragments_text}
@@ -84,21 +91,44 @@ async def assemble(
     fragments_text = "\n".join(lines)
 
     if plan.write_to_file:
-        sys_prompt = ASSEMBLER_SYSTEM_PROMPT.replace("{fragments_text}", fragments_text)
+        output_filenames_text = "\n".join(f"  - {f}" for f in plan.output_filenames)
+        sys_prompt = (
+            ASSEMBLER_SYSTEM_PROMPT
+            .replace("{fragments_text}", fragments_text)
+            .replace("{output_filenames_text}", output_filenames_text)
+        )
     else:
         # Include original user prompt context for the text assembler
         sys_prompt = TEXT_ASSEMBLER_SYSTEM_PROMPT.replace("{fragments_text}", fragments_text)
         sys_prompt += f"\n\nUser Request: {user_prompt}"
+
+    if not plan.write_to_file:
+        try:
+            raw = await call_local_async(
+                system_prompt=sys_prompt,
+                input_text="Produce the final response using only the provided fragments.",
+                anchor_str="Response:",
+                model_name=get_model_config().local_general,
+                temperature_override=0.0,
+                stage_name="assembler:local",
+            )
+        except Exception:
+            raw = await call_cloud_async(
+                system_prompt="",
+                user_message=sys_prompt,
+                temperature=0.0,
+                max_tokens=16384,
+                stage_name="assembler",
+            )
+        return {"__stdout__": raw}
 
     raw = await call_cloud_async(
         system_prompt="",
         user_message=sys_prompt,
         temperature=0.0,
         max_tokens=16384,
+        stage_name="assembler",
     )
-
-    if not plan.write_to_file:
-        return {"__stdout__": raw}
 
     files = _parse_file_delimiters(raw, plan.output_filenames)
 
@@ -119,6 +149,10 @@ def _parse_file_delimiters(raw: str, expected_filenames: list[str]) -> dict[str,
 
     If a file block is missing its END marker (truncation), we still extract
     the content up to the next FILE marker or end of string.
+
+    After parsing, any filename that matches an expected filename only by
+    basename (e.g. model returned "main.py" but plan expects "lib/main.py")
+    is remapped to the full expected path, provided the match is unambiguous.
     """
     files: dict[str, str] = {}
 
@@ -141,8 +175,35 @@ def _parse_file_delimiters(raw: str, expected_filenames: list[str]) -> dict[str,
         if clean and len(clean) > 20:
             # Best-effort: assign to first expected filename
             files[expected_filenames[0]] = clean
+        return files
 
-    return files
+    # --- Basename fuzzy-match: remap bare filenames to full expected paths ---
+    # Build a map: basename → full expected path (only unambiguous matches)
+    from pathlib import Path as _Path
+    basename_to_expected: dict[str, str] = {}
+    for ef in expected_filenames:
+        bn = _Path(ef).name
+        if bn in basename_to_expected:
+            # Ambiguous — two expected files share a basename; don't remap either
+            basename_to_expected[bn] = ""  # sentinel
+        else:
+            basename_to_expected[bn] = ef
+
+    remapped: dict[str, str] = {}
+    for fname, content in files.items():
+        if fname in expected_filenames:
+            # Exact match — keep as-is
+            remapped[fname] = content
+        else:
+            bn = _Path(fname).name
+            full = basename_to_expected.get(bn, "")
+            if full:  # non-empty sentinel → unambiguous match
+                remapped[full] = content
+            else:
+                # No remap possible; keep original (verifier will report it)
+                remapped[fname] = content
+
+    return remapped
 
 
 def assemble_sync(plan: TaskPlan, context: ContextDict, user_prompt: str = "") -> dict[str, str]:

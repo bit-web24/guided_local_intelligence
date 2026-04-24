@@ -7,8 +7,11 @@ Arguments:
     PROMPT    Task prompt (omit for interactive TUI mode)
 
 Options:
-    --output  -o  PATH   Output directory  [default: ./adp_output]
-    --model   -m  TEXT   Override local Ollama model
+    --output  -o  PATH   Output directory  [default: ./output]
+    --model   -m  TEXT   Override both local Ollama models
+    --cloud-model TEXT   Override the cloud/planner model
+    --coder-model TEXT   Override the local coder model
+    --general-model TEXT Override the local general model
     --no-tui             Plain text output (for scripting/CI)
     --debug              Print all system prompts and raw outputs
     --version            Show version and exit
@@ -17,19 +20,32 @@ Options:
 from __future__ import annotations
 
 import argparse
-import asyncio
-import os
 import sys
+from functools import partial
 from typing import Callable
 
-from adp.config import DEFAULT_OUTPUT_DIR, LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL, CLOUD_MODEL
+from adp.agent_graph import run_agent_graph
+from adp.config import (
+    CLARIFICATION_MAX_ROUNDS,
+    DEFAULT_OUTPUT_DIR,
+    get_model_config,
+    set_model_config,
+)
+from adp.engine.clarifier import (
+    detect_clarification_need_sync,
+    generate_clarification_question_sync,
+    merge_clarified_prompt_sync,
+    revise_clarified_prompt_sync,
+)
+from adp.engine.call_stats import reset_model_call_counts
+from adp.engine.tool_call_log import reset_tool_call_log
 from adp.engine.local_client import check_ollama_connection
+from adp.engine.quick_answers import maybe_answer_simple_temporal_prompt
 from adp.models.task import PipelineResult
-from adp.stages.assembler import assemble
-from adp.stages.decomposer import decompose
-from adp.stages.executor import execute_plan
 from adp.tui.app import TUICallbacks, interactive_loop, make_plain_callbacks, run_with_live
-from adp.writer import write_output_files, write_execution_log
+from adp.tui.input_handler import get_user_input
+from adp.mcp.config import load_mcp_config
+from adp.mcp.client import MCPClientManager
 
 VERSION = "0.1.0"
 
@@ -42,58 +58,47 @@ async def run_pipeline_async(
     output_dir: str,
     callbacks: TUICallbacks,
     debug: bool = False,
+    resume_run_id: str | None = None,
 ) -> PipelineResult:
     """
-    Orchestrate all 4 stages: Decompose → Execute → Assemble → Write.
+    Run the LangGraph supervisor loop for the local-first agent.
+
+    MCP lifecycle:
+    - load_mcp_config() reads mcp_servers.toml (empty = MCP disabled)
+    - MCPClientManager starts all configured servers, builds ToolRegistry
+    - ToolRegistry is passed to decompose() → Decomposer sees available tools
+    - project_dir is passed so Decomposer writes correct absolute paths
+    - mcp_manager is passed to execute_plan() → per-task pre-fetch runs
+    - MCPClientManager.stop() is called on exit (via async context manager)
 
     The large model is called exactly twice:
     1. decompose()  → in stages/decomposer.py
     2. assemble()   → in stages/assembler.py
     """
-    # Stage 1 — Decompose (large model)
-    callbacks.on_stage("DECOMPOSING")
-    plan = await decompose(user_prompt)
-    callbacks.on_plan_ready(plan)
+    if resume_run_id is None:
+        quick_answer = maybe_answer_simple_temporal_prompt(user_prompt)
+        if quick_answer is not None:
+            callbacks.on_stage("FAST_PATH")
+            callbacks.on_complete([], output_dir, stdout_text=quick_answer)
+            return PipelineResult(
+                files={"__stdout__": quick_answer},
+                context={"fast_path": "simple_temporal"},
+                tasks=[],
+            )
 
-    if debug:
-        print(f"\n[DEBUG] Task plan: {len(plan.tasks)} tasks")
-        for t in plan.tasks:
-            print(f"\n  [{t.id}] {t.description}")
-            print(f"  group: {t.parallel_group}  depends: {t.depends_on}")
-            print(f"  --- system prompt ---")
-            print(t.system_prompt_template)
-            print(f"  ---")
+    mcp_config = load_mcp_config()
 
-    # Stage 2 — Execute (small model, parallel within groups)
-    callbacks.on_stage("EXECUTING")
-    context = await execute_plan(
-        plan,
-        on_task_start=callbacks.on_task_start,
-        on_task_done=callbacks.on_task_done,
-        on_task_failed=callbacks.on_task_failed,
-    )
-
-    if debug:
-        print(f"\n[DEBUG] Context keys: {list(context.keys())}")
-
-    # Stage 3 — Assemble (large model)
-    callbacks.on_stage("ASSEMBLING")
-    files = await assemble(plan, context, user_prompt=user_prompt)
-
-    # Stage 4 — Write or Print
-    callbacks.on_stage("WRITING")
-    
-    # Always write an execution log regardless of text/file mode
-    write_execution_log(user_prompt, plan, output_dir)
-    
-    if plan.write_to_file:
-        written = write_output_files(files, output_dir)
-        callbacks.on_complete(written, output_dir, stdout_text=None)
-    else:
-        text_output = files.get("__stdout__", "Error: No text output returned.")
-        callbacks.on_complete([], output_dir, stdout_text=text_output)
-
-    return PipelineResult(files=files, context=context, tasks=plan.tasks)
+    async with MCPClientManager() as mcp_manager:
+        tool_registry = await mcp_manager.start(mcp_config)
+        return await run_agent_graph(
+            user_prompt=user_prompt,
+            output_dir=output_dir,
+            callbacks=callbacks,
+            debug=debug,
+            mcp_manager=mcp_manager,
+            tool_registry=tool_registry,
+            resume_run_id=resume_run_id,
+        )
 
 
 def run_pipeline(
@@ -101,11 +106,84 @@ def run_pipeline(
     output_dir: str,
     callbacks: TUICallbacks,
     debug: bool = False,
+    resume_run_id: str | None = None,
 ) -> PipelineResult:
-    """Synchronous wrapper around the async pipeline."""
-    return asyncio.run(
-        run_pipeline_async(user_prompt, output_dir, callbacks, debug)
+    """
+    Synchronous wrapper around the async pipeline.
+
+    Uses anyio.run() (not asyncio.run()) so that anyio's cancel scope and
+    task-group machinery is fully initialised BEFORE any coroutines execute.
+    asyncio.run() causes anyio to self-initialise lazily, which breaks
+    BaseSession's create_task_group() cancel scope tracking under Python 3.14,
+    triggering 'Attempted to exit cancel scope in a different task'.
+    """
+    import anyio
+    reset_model_call_counts()
+    reset_tool_call_log()
+    return anyio.run(
+        partial(run_pipeline_async, user_prompt, output_dir, callbacks, debug, resume_run_id),
+        backend="asyncio",
     )
+
+
+def clarify_prompt(user_prompt: str, output_dir: str) -> str | None:
+    """Run the preflight clarification loop in the foreground terminal."""
+    from rich.console import Console
+
+    console = Console()
+
+    def _announce(message: str) -> None:
+        console.print(f"[bold cyan]{message}[/]")
+
+    qa_pairs: list[tuple[str, str]] = []
+    turns_used = 0
+    current_prompt = user_prompt
+
+    while True:
+        remaining_rounds = max(CLARIFICATION_MAX_ROUNDS - turns_used, 0)
+        need = detect_clarification_need_sync(
+            current_prompt,
+            qa_pairs,
+            force_proceed=remaining_rounds <= 0,
+        )
+        if bool(need.get("needs_clarification", False)) and remaining_rounds > 0:
+            reason_label = str(need.get("reason_label", "")).strip() or "missing_information"
+            question = generate_clarification_question_sync(current_prompt, qa_pairs, reason_label)
+            _announce(f"Clarification {turns_used + 1}/{CLARIFICATION_MAX_ROUNDS}: {question}")
+            answer = get_user_input(
+                prompt_label=f"[clarify {turns_used + 1}]",
+            )
+            if answer is None:
+                return None
+            answer = answer.strip()
+            if not answer:
+                console.print()
+                return current_prompt
+            qa_pairs.append((question, answer))
+            turns_used += 1
+            current_prompt = merge_clarified_prompt_sync(current_prompt, qa_pairs)
+            qa_pairs = []
+
+        console.print("\n[bold green]Clarified prompt:[/]")
+        console.print(current_prompt)
+
+        if turns_used >= CLARIFICATION_MAX_ROUNDS:
+            console.print("[dim]Clarification limit reached. Proceeding.[/]\n")
+            return current_prompt
+
+        console.print("[dim]Press Enter to proceed, or type a refinement.[/]")
+        user_reply = get_user_input(
+            prompt_label=f"[clarify {turns_used + 1}]",
+        )
+        if user_reply is None:
+            return None
+
+        reply = user_reply.strip()
+        if not reply:
+            console.print()
+            return current_prompt
+        current_prompt = revise_clarified_prompt_sync(current_prompt, reply)
+        turns_used += 1
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +210,25 @@ def _build_parser() -> argparse.ArgumentParser:
         "--model", "-m",
         default=None,
         metavar="MODEL",
-        help="Override local Ollama models (overrides env vars)",
+        help="Override both local Ollama models (overrides env vars)",
+    )
+    parser.add_argument(
+        "--cloud-model",
+        default=None,
+        metavar="MODEL",
+        help="Override the cloud/planner model",
+    )
+    parser.add_argument(
+        "--coder-model",
+        default=None,
+        metavar="MODEL",
+        help="Override the local coder model",
+    )
+    parser.add_argument(
+        "--general-model",
+        default=None,
+        metavar="MODEL",
+        help="Override the local general model",
     )
     parser.add_argument(
         "--no-tui",
@@ -143,6 +239,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--debug",
         action="store_true",
         help="Print all system prompts and raw model outputs",
+    )
+    parser.add_argument(
+        "--resume",
+        metavar="RUN_ID",
+        help="Resume a prior run from output_dir/.gli_runs/<RUN_ID>/state.json",
     )
     parser.add_argument(
         "--version",
@@ -157,34 +258,54 @@ def cli() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    # Apply model override if given
-    if args.model:
-        os.environ["LOCAL_CODER_MODEL"] = args.model
-        os.environ["LOCAL_GENERAL_MODEL"] = args.model
+    set_model_config(
+        cloud=args.cloud_model,
+        local=args.model,
+        local_coder=args.coder_model,
+        local_general=args.general_model,
+    )
+    models = get_model_config()
 
     output_dir: str = args.output
     no_tui: bool = args.no_tui
     debug: bool = args.debug
+    resume_run_id: str | None = args.resume
 
     def check_ollama() -> bool:
-        return asyncio.run(check_ollama_connection())
+        import anyio
+        return anyio.run(check_ollama_connection, backend="asyncio")
 
-    def pipeline_fn_factory(user_prompt: str, out_dir: str) -> Callable:
+    def pipeline_fn_factory(user_prompt: str, out_dir: str, resume_id: str | None = None) -> Callable:
         """Returns a callable(callbacks) that runs the full pipeline."""
         def _run(callbacks: TUICallbacks) -> PipelineResult:
-            return run_pipeline(user_prompt, out_dir, callbacks, debug=debug)
+            return run_pipeline(
+                user_prompt,
+                out_dir,
+                callbacks,
+                debug=debug,
+                resume_run_id=resume_id,
+            )
         return _run
 
-    if args.prompt:
+    if args.prompt or resume_run_id:
         # Single-shot mode: prompt given on command line
         ollama_ok = check_ollama()
         if not ollama_ok:
             print(
-                f"Warning: One or both local models not found. "
+                f"Warning: One or both local models not found "
+                f"({models.local_coder}, {models.local_general}). "
                 "Proceeding — calls may fail.",
                 file=sys.stderr,
             )
-        pipeline_fn = pipeline_fn_factory(args.prompt, output_dir)
+        effective_prompt = args.prompt or ""
+        if effective_prompt and resume_run_id is None:
+            clarified_prompt = clarify_prompt(effective_prompt, output_dir)
+            if clarified_prompt is None:
+                print("Cancelled during clarification.", file=sys.stderr)
+                sys.exit(1)
+            effective_prompt = clarified_prompt
+
+        pipeline_fn = pipeline_fn_factory(effective_prompt, output_dir, resume_run_id)
         try:
             if no_tui:
                 callbacks = make_plain_callbacks()
@@ -201,6 +322,7 @@ def cli() -> None:
             output_dir=output_dir,
             no_tui=no_tui,
             check_ollama_fn=check_ollama,
+            clarify_prompt_fn=clarify_prompt,
         )
 
 

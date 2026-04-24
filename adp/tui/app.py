@@ -31,7 +31,9 @@ from rich.live import Live
 from rich.style import Style
 from rich.text import Text
 
-from adp.models.task import MicroTask, TaskPlan, TaskStatus
+from adp.models.task import MicroTask, ReflectionResult, TaskPlan, TaskStatus
+from adp.config import DECOMPOSITION_MAX_RETRIES
+from adp.engine.call_stats import get_model_call_counts, get_stage_model_call_counts
 from adp.tui import panels
 from adp.tui.input_handler import get_user_prompt
 
@@ -42,73 +44,81 @@ console = Console()
 # ---------------------------------------------------------------------------
 # GLI gradient colours — cyan → blue → magenta (left → right per row)
 _BANNER_GRADIENT = [
-    (0,   255, 255),  # cyan
-    (0,   180, 255),
-    (60,  120, 255),
-    (120,  80, 255),
-    (180,  40, 220),
-    (220,  20, 180),  # magenta
+    (0, 200, 255),
+    (0, 150, 255),
+    (80, 110, 255),
+    (140, 80, 255),
+    (190, 60, 220),
+    (220, 80, 180),
 ]
 
 
 def _lerp_color(t: float) -> tuple[int, int, int]:
-    """Linearly interpolate across the gradient stops for t in [0,1]."""
     stops = _BANNER_GRADIENT
     scaled = t * (len(stops) - 1)
     lo = int(scaled)
     hi = min(lo + 1, len(stops) - 1)
     frac = scaled - lo
+
     r = int(stops[lo][0] + frac * (stops[hi][0] - stops[lo][0]))
     g = int(stops[lo][1] + frac * (stops[hi][1] - stops[lo][1]))
     b = int(stops[lo][2] + frac * (stops[hi][2] - stops[lo][2]))
+
     return r, g, b
 
 
-def print_banner() -> None:
-    """Print the GLI ASCII art banner with a cyan→magenta gradient."""
+def print_banner(version: str = "v1.0.0") -> None:
     try:
         import pyfiglet
         import shutil
+
         term_width = shutil.get_terminal_size().columns
-        
-        # Pick the largest font that fits cleanly into the horizontal terminal bounds
-        if term_width >= 120:
-            font_name = "larry3d"
-        elif term_width >= 90:
-            font_name = "univers"
-        elif term_width >= 75:
-            font_name = "slant"
+
+        # Use structured multi-line instead of one long stretched line
+        if term_width >= 110:
+            font = "standard"
+        elif term_width >= 80:
+            font = "slant"
         else:
-            font_name = "small"
-            
+            font = "small"
+
         raw = pyfiglet.figlet_format(
-            "Guided\nLocal\nIntelligence", 
-            font=font_name, 
-            width=max(term_width, 200)
+            "Guided\nLocal\nIntelligence",
+            font=font,
+            width=term_width
         )
+
     except Exception:
-        # Fallback if pyfiglet is missing or font not found
-        raw = "  GUIDED LOCAL INTELLIGENCE\n"
+        raw = "Guided Local Intelligence"
 
-    lines = raw.splitlines()
-    # Trim leading/trailing blank lines
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    while lines and not lines[-1].strip():
-        lines.pop()
+    lines = [l.rstrip() for l in raw.splitlines() if l.strip()]
+    if not lines:
+        return
 
-    max_width = max(len(line) for line in lines) if lines else 1
+    max_width = max(len(l) for l in lines)
 
+    import shutil
+    term_width = shutil.get_terminal_size().columns
+    pad = max((term_width - max_width) // 2, 0)
+
+    # Render gradient text
     for line in lines:
-        t = Text()
+        t = Text(" " * pad)
+
         for i, ch in enumerate(line):
             col_t = i / max_width
             r, g, b = _lerp_color(col_t)
-            t.append(ch, style=Style(color=f"rgb({r},{g},{b})", bold=True))
-        console.print(t)
-    
-    console.print()
 
+            t.append(
+                ch,
+                style=Style(color=f"rgb({r},{g},{b})", bold=True)
+            )
+
+        console.print(t)
+
+    # Clean metadata section
+    console.print(" " * pad + f"[dim]{version} • Local-first AI system[/dim]")
+    console.print()
 
 # ---------------------------------------------------------------------------
 # Shared render state — guarded by a threading.Lock
@@ -119,6 +129,9 @@ _render_state: dict = {
     "tasks": [],
     "current_task": None,
     "streamed_output": "",
+    "activity": [],
+    "tool_history": [],
+    "run_summary": "",
     "stage": "IDLE",
     "written_files": [],
     "output_dir": "",
@@ -126,6 +139,41 @@ _render_state: dict = {
     "output_filenames": [],
     "error": None,
 }
+
+_MAX_ACTIVITY_ITEMS = 12
+_MAX_TOOL_HISTORY_ITEMS = 20
+
+
+def _build_run_summary(tasks: list[MicroTask], tool_history: list[str]) -> str:
+    """Summarize execution outcomes and tool usage."""
+    if not tasks:
+        return "Run Summary\n- Fast path response returned (no planned tasks executed)."
+
+    total = len(tasks)
+    done = sum(1 for task in tasks if task.status == TaskStatus.DONE)
+    failed = sum(1 for task in tasks if task.status == TaskStatus.FAILED)
+    skipped = sum(1 for task in tasks if task.status == TaskStatus.SKIPPED)
+
+    tool_calls: list[str] = []
+    for entry in tool_history:
+        if " call: " in entry:
+            tool_calls.append(entry.split(" call: ", 1)[1].strip())
+
+    lines = [
+        "Run Summary",
+        f"- Tasks: {done}/{total} done, {failed} failed, {skipped} skipped.",
+    ]
+    if tool_calls:
+        unique_tools = sorted(set(tool_calls))
+        lines.append(
+            f"- Tools called: {len(tool_calls)} call(s) across {len(unique_tools)} tool(s): "
+            + ", ".join(unique_tools)
+            + "."
+        )
+    else:
+        lines.append("- Tools called: none.")
+
+    return "\n".join(lines)
 
 
 def _update_state(**kwargs) -> None:
@@ -147,26 +195,47 @@ def _read_state() -> dict:
 class TUICallbacks:
     on_stage: Callable[[str], None]
     on_plan_ready: Callable[[TaskPlan], None]
+    on_decomposition_retry: Callable[[int, str], None]
     on_task_start: Callable[[MicroTask], None]
     on_task_done: Callable[[MicroTask], None]
     on_task_failed: Callable[[MicroTask], None]
+    on_tool_start: Callable[[MicroTask, str], None]
+    on_tool_done: Callable[[MicroTask, str, bool, str | None], None]
+    on_task_reflected: Callable[[MicroTask, ReflectionResult], None]
     on_complete: Callable[[list[tuple[str, int]], str, str | None], None]
     on_error: Callable[[str], None]
 
 
 def make_tui_callbacks() -> TUICallbacks:
     """Create callbacks that update render_state (non-blocking)."""
+    def append_activity(message: str) -> None:
+        with _state_lock:
+            activity = list(_render_state.get("activity", []))
+            activity.append(message)
+            _render_state["activity"] = activity[-_MAX_ACTIVITY_ITEMS:]
+
+    def append_tool_history(message: str) -> None:
+        with _state_lock:
+            tool_history = list(_render_state.get("tool_history", []))
+            tool_history.append(message)
+            _render_state["tool_history"] = tool_history[-_MAX_TOOL_HISTORY_ITEMS:]
+
     def on_stage(stage: str) -> None:
         _update_state(stage=stage)
+        append_activity(f"Stage: {stage}")
 
     def on_plan_ready(plan: TaskPlan) -> None:
         _update_state(
             tasks=list(plan.tasks),
-            output_filenames=list(plan.output_filenames),
         )
+        append_activity(f"Plan ready: {len(plan.tasks)} tasks")
+
+    def on_decomposition_retry(attempt: int, reason: str) -> None:
+        append_activity(f"Decomposition retry {attempt}/{DECOMPOSITION_MAX_RETRIES}: {reason}")
 
     def on_task_start(task: MicroTask) -> None:
         _update_state(current_task=task, streamed_output="")
+        append_activity(f"{task.id} started: {task.description}")
 
     def on_task_done(task: MicroTask) -> None:
         with _state_lock:
@@ -174,28 +243,62 @@ def make_tui_callbacks() -> TUICallbacks:
             current = _render_state.get("current_task")
             if current and current.id == task.id:
                 _render_state["streamed_output"] = task.output or ""
+        append_activity(f"{task.id} done")
 
     def on_task_failed(task: MicroTask) -> None:
         with _state_lock:
             _render_state["tasks"] = list(_render_state["tasks"])
+        append_activity(f"{task.id} failed: {task.error or 'failed'}")
+
+    def on_tool_start(task: MicroTask, tool_name: str) -> None:
+        message = f"{task.id} call: {tool_name}"
+        append_activity(f"[tool] {message}")
+        append_tool_history(message)
+
+    def on_tool_done(task: MicroTask, tool_name: str, ok: bool, detail: str | None) -> None:
+        if ok:
+            message = f"{task.id} done: {tool_name}"
+            append_activity(f"[tool] {message}")
+            append_tool_history(message)
+        else:
+            message = f"{task.id} failed: {tool_name} ({detail or 'failed'})"
+            append_activity(f"[tool] {message}")
+            append_tool_history(message)
+
+    def on_task_reflected(task: MicroTask, result: ReflectionResult) -> None:
+        verdict = "PASS" if result.passed else f"FAIL — {result.reason}"
+        cloud_tag = " [cloud]" if result.used_cloud else ""
+        append_activity(f"{task.id} reflected{cloud_tag}: {verdict}")
 
     def on_complete(written: list[tuple[str, int]], output_dir: str, stdout_text: str | None = None) -> None:
+        summary = _build_run_summary(
+            list(_render_state.get("tasks", [])),
+            list(_render_state.get("tool_history", [])),
+        )
         _update_state(
             stage="DONE",
             written_files=written,
             output_dir=output_dir,
             stdout_text=stdout_text,
+            output_filenames=[filename for filename, _size in written],
+            run_summary=summary,
         )
+        append_activity("Pipeline complete")
 
     def on_error(message: str) -> None:
         _update_state(stage="ERROR", error=message)
+        append_activity(f"Pipeline error: {message}")
 
     return TUICallbacks(
         on_stage=on_stage,
         on_plan_ready=on_plan_ready,
+        on_decomposition_retry=on_decomposition_retry,
         on_task_start=on_task_start,
         on_task_done=on_task_done,
         on_task_failed=on_task_failed,
+        on_tool_start=on_tool_start,
+        on_tool_done=on_tool_done,
+        on_task_reflected=on_task_reflected,
         on_complete=on_complete,
         on_error=on_error,
     )
@@ -203,11 +306,21 @@ def make_tui_callbacks() -> TUICallbacks:
 
 def make_plain_callbacks() -> TUICallbacks:
     """Create callbacks that just print to stdout (--no-tui mode)."""
+    tracked_tasks: list[MicroTask] = []
+    tool_history: list[str] = []
+
     def on_stage(stage: str) -> None:
         console.print(f"[bold magenta][{stage}][/]")
 
     def on_plan_ready(plan: TaskPlan) -> None:
+        tracked_tasks.clear()
+        tracked_tasks.extend(plan.tasks)
         console.print(f"[cyan]Plan: {len(plan.tasks)} tasks → {plan.output_filenames}[/]")
+
+    def on_decomposition_retry(attempt: int, reason: str) -> None:
+        console.print(
+            f"  [yellow]↺ decompose {attempt}/{DECOMPOSITION_MAX_RETRIES}[/] {reason}"
+        )
 
     def on_task_start(task: MicroTask) -> None:
         console.print(f"  [yellow]▶ {task.id}[/] {task.description}")
@@ -219,8 +332,26 @@ def make_plain_callbacks() -> TUICallbacks:
         icon = "✗" if task.status == TaskStatus.FAILED else "–"
         console.print(f"  [red]{icon} {task.id}[/] {task.error or 'failed'}")
 
+    def on_tool_start(task: MicroTask, tool_name: str) -> None:
+        tool_history.append(f"{task.id} call: {tool_name}")
+        console.print(f"  [cyan]↺ tool[/] {task.id} → {tool_name}")
+
+    def on_tool_done(task: MicroTask, tool_name: str, ok: bool, detail: str | None) -> None:
+        tool_history.append(f"{task.id} {'done' if ok else 'failed'}: {tool_name}")
+        if ok:
+            console.print(f"  [green]✓ tool[/] {task.id} → {tool_name}")
+        else:
+            console.print(f"  [red]✗ tool[/] {task.id} → {tool_name}: {detail or 'failed'}")
+
+    def on_task_reflected(task: MicroTask, result: ReflectionResult) -> None:
+        if result.passed:
+            console.print(f"  [green]◉ {task.id}[/] reflected: PASS")
+        else:
+            console.print(f"  [red]◉ {task.id}[/] reflected: FAIL — {result.reason}")
+
     def on_complete(written: list[tuple[str, int]], output_dir: str, stdout_text: str | None = None) -> None:
         console.print("\n[bold green]Done![/]")
+        console.print(panels.render_run_summary(_build_run_summary(tracked_tasks, tool_history)))
         if stdout_text:
             from rich.markdown import Markdown
             console.print(Markdown(stdout_text))
@@ -228,6 +359,7 @@ def make_plain_callbacks() -> TUICallbacks:
             console.print(f"Files written to [cyan]{output_dir}[/]")
             for fname, size in written:
                 console.print(f"  [green]✓[/] {fname} ({size:,} bytes)")
+        console.print(panels.render_model_call_summary(get_model_call_counts()))
 
     def on_error(message: str) -> None:
         console.print(f"[bold red]Error:[/] {message}")
@@ -235,9 +367,13 @@ def make_plain_callbacks() -> TUICallbacks:
     return TUICallbacks(
         on_stage=on_stage,
         on_plan_ready=on_plan_ready,
+        on_decomposition_retry=on_decomposition_retry,
         on_task_start=on_task_start,
         on_task_done=on_task_done,
         on_task_failed=on_task_failed,
+        on_tool_start=on_tool_start,
+        on_tool_done=on_tool_done,
+        on_task_reflected=on_task_reflected,
         on_complete=on_complete,
         on_error=on_error,
     )
@@ -259,6 +395,14 @@ def _build_layout(state: dict) -> Layout:
         Layout(name="tasks", ratio=2),
         Layout(name="current", ratio=3),
     )
+    layout["current"].split_column(
+        Layout(name="current_task", ratio=2),
+        Layout(name="lower", ratio=3),
+    )
+    layout["lower"].split_row(
+        Layout(name="activity", ratio=3),
+        Layout(name="tools", ratio=2),
+    )
 
     layout["header"].update(
         panels.render_header(state["stage"], state["ollama_ok"])
@@ -266,11 +410,17 @@ def _build_layout(state: dict) -> Layout:
     layout["tasks"].update(
         panels.render_task_list(state["tasks"])
     )
-    layout["current"].update(
+    layout["current_task"].update(
         panels.render_current_task(
             state["current_task"],
             state["streamed_output"],
         )
+    )
+    layout["activity"].update(
+        panels.render_activity(state["activity"], state.get("error"))
+    )
+    layout["tools"].update(
+        panels.render_tool_history(state.get("tool_history", []))
     )
     if state["output_filenames"]:
         layout["files"].update(panels.render_output_files(state["output_filenames"]))
@@ -300,6 +450,9 @@ def run_with_live(
         tasks=[],
         current_task=None,
         streamed_output="",
+        activity=[],
+        tool_history=[],
+        run_summary="",
         stage="IDLE",
         written_files=[],
         output_dir=output_dir,
@@ -322,14 +475,21 @@ def run_with_live(
         _build_layout(_read_state()),
         console=console,
         refresh_per_second=10,
-        screen=False,
+        screen=True,
+        transient=True,
     ) as live:
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(_run)
+            last_state = _read_state()
             while not future.done():
-                live.update(_build_layout(_read_state()))
+                state = _read_state()
+                if state != last_state:
+                    live.update(_build_layout(state))
+                    last_state = state
                 import time; time.sleep(0.1)
-            live.update(_build_layout(_read_state()))
+            state = _read_state()
+            if state != last_state:
+                live.update(_build_layout(state))
 
     # Re-raise if pipeline failed
     if result_holder["exc"]:
@@ -338,11 +498,23 @@ def run_with_live(
     # Print completion summary outside Live context (non-live rich.print)
     state = _read_state()
     if state.get("stdout_text"):
+        if state.get("run_summary"):
+            console.print(panels.render_run_summary(state["run_summary"]))
         console.print(panels.render_text_response(state["stdout_text"]))
+        console.print(
+            panels.render_model_call_summary(
+                get_model_call_counts(),
+                get_stage_model_call_counts(),
+            )
+        )
     elif state["written_files"]:
+        if state.get("run_summary"):
+            console.print(panels.render_run_summary(state["run_summary"]))
         console.print(panels.render_completion_summary(
             state["written_files"],
             state["output_dir"],
+            get_model_call_counts(),
+            get_stage_model_call_counts(),
         ))
 
 
@@ -351,6 +523,7 @@ def interactive_loop(
     output_dir: str,
     no_tui: bool,
     check_ollama_fn: Callable[[], bool],
+    clarify_prompt_fn: Callable[[str, str], str | None] | None = None,
 ) -> None:
     """
     REPL loop: collect prompt → run pipeline → repeat.
@@ -362,7 +535,7 @@ def interactive_loop(
     console.print(f"[dim]Type your prompt and press Enter. Ctrl+C to exit.[/]\n")
 
     while True:
-        user_prompt = get_user_prompt(output_dir_hint=output_dir)
+        user_prompt = get_user_prompt()
         if user_prompt is None:
             console.print("\n[dim]Bye.[/]")
             break
@@ -377,7 +550,16 @@ def interactive_loop(
                 "Proceeding anyway — calls may fail."
             )
 
-        pipeline_fn = pipeline_fn_factory(user_prompt, output_dir)
+        effective_prompt = user_prompt
+        if clarify_prompt_fn is not None:
+            clarified = clarify_prompt_fn(user_prompt, output_dir)
+            if clarified is None:
+                console.print("[dim]Cancelled during clarification.[/]")
+                console.print()
+                continue
+            effective_prompt = clarified
+
+        pipeline_fn = pipeline_fn_factory(effective_prompt, output_dir)
 
         try:
             if no_tui:

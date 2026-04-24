@@ -30,6 +30,11 @@ class MicroTask:
     anchor: AnchorType               # token ending the prompt; signals output start
     parallel_group: int              # tasks with same group number run concurrently
     model_type: str = field(default="coder")    # "coder" or "general"
+    # MCP integration — assigned by the Decomposer, executed by the Executor
+    # before the local model call. Results are injected as {tool_name}_result.
+    mcp_tools: list[str] = field(default_factory=list)       # tool names to call
+    mcp_tool_args: dict[str, dict] = field(default_factory=dict)  # tool → arg overrides
+    # Runtime state
     status: TaskStatus = field(default=TaskStatus.PENDING)
     output: str | None = field(default=None)    # populated after successful execution
     retries: int = field(default=0)             # counts retry attempts
@@ -46,6 +51,7 @@ class TaskPlan:
 
 # ContextDict: task output_key → task output value (plain string, already validated)
 ContextDict = dict[str, str]
+StageList = list[str]
 
 
 @dataclass
@@ -53,3 +59,12 @@ class PipelineResult:
     files: dict[str, str]            # filename → complete file content
     context: ContextDict             # full context dict for debugging
     tasks: list[MicroTask]           # final task list with all statuses and outputs
+
+
+@dataclass
+class ReflectionResult:
+    """Result of per-task semantic reflection (PASS or FAIL with reason)."""
+    task_id: str
+    passed: bool
+    reason: str                      # "PASS" or explanation of failure
+    used_cloud: bool = False         # True if cloud model was used for this reflection

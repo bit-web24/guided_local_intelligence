@@ -9,12 +9,13 @@ import asyncio
 import httpx
 
 from adp.config import (
-    LOCAL_CODER_MODEL,
-    LOCAL_GENERAL_MODEL,
+    get_model_config,
+    resolve_stage_model,
     LOCAL_TEMPERATURE,
     LOCAL_TIMEOUT,
     OLLAMA_BASE_URL,
 )
+from adp.engine.call_stats import record_model_call
 
 
 async def call_local_async(
@@ -22,6 +23,8 @@ async def call_local_async(
     input_text: str,
     anchor_str: str,
     model_name: str,
+    temperature_override: float | None = None,
+    stage_name: str = "local",
 ) -> str:
     """
     Call the small Ollama model asynchronously.
@@ -30,16 +33,22 @@ async def call_local_async(
     The system prompt is passed as the 'system' field (already filled with
     upstream context before this function is called).
 
+    temperature_override: if set, overrides LOCAL_TEMPERATURE for this call.
+    Used by the retry strategy to bump temperature on retries (0.0 → 0.1 → 0.2).
+    Default behaviour (None) uses LOCAL_TEMPERATURE (0.0).
+
     Returns the raw model output string (may include preamble before anchor).
     """
+    effective_temp = temperature_override if temperature_override is not None else LOCAL_TEMPERATURE
+    resolved_model_name = resolve_stage_model(stage_name, model_name)
     full_prompt = f"Input: {input_text}\n{anchor_str}"
     payload = {
-        "model": model_name,
+        "model": resolved_model_name,
         "system": system_prompt,
         "prompt": full_prompt,
         "stream": False,
         "options": {
-            "temperature": LOCAL_TEMPERATURE,  # always 0.0 — determinism mandatory
+            "temperature": effective_temp,
             "num_predict": 2048,
         },
     }
@@ -49,6 +58,7 @@ async def call_local_async(
             json=payload,
         )
         response.raise_for_status()
+        record_model_call(resolved_model_name, stage_name=stage_name)
         return response.json()["response"]
 
 
@@ -66,7 +76,8 @@ async def check_ollama_connection() -> bool:
     """
     Returns True if Ollama is reachable and both required local models are available.
     """
-    required_models = {LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL}
+    models = get_model_config()
+    required_models = {models.local_coder, models.local_general}
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             response = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
@@ -75,5 +86,17 @@ async def check_ollama_connection() -> bool:
             # Check if each required model name is contained within the available models list
             # We use `any` to allow "qwen2.5-coder:1.5b" to match "qwen2.5-coder:1.5b-latest" etc.
             return all(any(req in avail for avail in available) for req in required_models)
+    except Exception:
+        return False
+
+
+async def is_local_model_available(model_name: str) -> bool:
+    """Fast availability probe for one local Ollama model."""
+    try:
+        async with httpx.AsyncClient(timeout=2) as client:
+            response = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+            data = response.json()
+            available = {m["name"] for m in data.get("models", [])}
+            return any(model_name in avail for avail in available)
     except Exception:
         return False

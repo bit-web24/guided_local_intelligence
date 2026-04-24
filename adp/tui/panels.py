@@ -13,7 +13,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.markdown import Markdown
 
-from adp.config import CLOUD_MODEL, LOCAL_CODER_MODEL, LOCAL_GENERAL_MODEL
+from adp.config import get_model_config
 from adp.models.task import MicroTask, TaskStatus
 from adp.tui import themes as th
 
@@ -31,6 +31,7 @@ def _status_icon(status: TaskStatus) -> tuple[str, str]:
 
 def render_header(stage: str, ollama_ok: bool) -> Panel:
     """Top header bar showing model names, stage, and Ollama connection status."""
+    models = get_model_config()
     conn_icon = "●" if ollama_ok else "○"
     conn_color = "bold green" if ollama_ok else "bold red"
     conn_label = "Ollama connected" if ollama_ok else "Ollama disconnected"
@@ -40,10 +41,10 @@ def render_header(stage: str, ollama_ok: bool) -> Panel:
     t.append(f"{th.APP_SUBTITLE}", style=th.COLOR_TITLE)
     t.append("    ")
     t.append(f"cloud: ", style=th.COLOR_FOOTER)
-    t.append(CLOUD_MODEL, style=th.COLOR_CLOUD)
+    t.append(models.cloud, style=th.COLOR_CLOUD)
     t.append("   ")
     t.append(f"local: ", style=th.COLOR_FOOTER)
-    t.append(f"{LOCAL_CODER_MODEL} | {LOCAL_GENERAL_MODEL}", style=th.COLOR_LOCAL)
+    t.append(f"{models.local_coder} | {models.local_general}", style=th.COLOR_LOCAL)
     t.append("   ")
     t.append(f"{conn_icon} {conn_label}", style=conn_color)
 
@@ -146,8 +147,78 @@ def render_current_task(task: MicroTask | None, streamed_output: str) -> Panel:
     )
 
 
+def render_activity(activity: list[str], error: str | None = None) -> Panel:
+    """Lower-right panel showing the newest pipeline activity first."""
+    body = Text()
+    entries = list(reversed(activity[-4:]))
+
+    if not entries and not error:
+        body.append("Waiting for activity…", style=th.COLOR_FOOTER)
+    else:
+        if entries:
+            latest = entries[0]
+            latest_style = (
+                th.COLOR_ERROR
+                if "error" in latest.lower() or "failed" in latest.lower()
+                else th.COLOR_RUNNING
+            )
+            body.append("Latest event\n", style=th.COLOR_TITLE)
+            body.append(latest, style=latest_style)
+
+        if len(entries) > 1:
+            body.append("\n\nRecent\n", style=th.COLOR_TITLE)
+            for index, entry in enumerate(entries[1:]):
+                style = (
+                    th.COLOR_ERROR
+                    if "error" in entry.lower() or "failed" in entry.lower()
+                    else th.COLOR_FOOTER
+                )
+                body.append(entry, style=style)
+                if index != len(entries[1:]) - 1:
+                    body.append("\n")
+
+    return Panel(
+        body,
+        title="ACTIVITY",
+        title_align="left",
+        border_style=th.COLOR_BORDER,
+        padding=(0, 1),
+    )
+
+
+def render_tool_history(tool_history: list[str]) -> Panel:
+    """Lower-right companion panel listing MCP tools called so far."""
+    body = Text()
+    entries = list(reversed(tool_history[-12:]))
+
+    if not entries:
+        body.append("No MCP tools called yet.", style=th.COLOR_FOOTER)
+    else:
+        for index, entry in enumerate(entries):
+            lowered = entry.lower()
+            if "failed" in lowered:
+                style = th.COLOR_TOOL_FAILED
+            elif "done" in lowered:
+                style = th.COLOR_TOOL_DONE
+            elif "call" in lowered:
+                style = th.COLOR_TOOL_CALL
+            else:
+                style = th.COLOR_TOOL_NEUTRAL
+            body.append(entry, style=style)
+            if index != len(entries) - 1:
+                body.append("\n")
+
+    return Panel(
+        body,
+        title="TOOLS USED",
+        title_align="left",
+        border_style=th.COLOR_BORDER,
+        padding=(0, 1),
+    )
+
+
 def render_output_files(filenames: list[str]) -> Panel:
-    """Footer bar listing expected output filenames."""
+    """Footer bar listing written output filenames."""
     t = Text()
     t.append("OUTPUT FILES: ", style=th.COLOR_FOOTER)
     for i, name in enumerate(filenames):
@@ -175,6 +246,8 @@ def render_footer() -> Text:
 def render_completion_summary(
     written: list[tuple[str, int]],
     output_dir: str,
+    model_call_counts: dict[str, int] | None = None,
+    stage_model_call_counts: dict[str, dict[str, int]] | None = None,
 ) -> Panel:
     """Completion panel shown after all files are written."""
     table = Table.grid(padding=(0, 2))
@@ -189,6 +262,17 @@ def render_completion_summary(
     t = Text()
     t.append(f"\nAll files written to: ", style=th.COLOR_FOOTER)
     t.append(output_dir, style=th.COLOR_FILE)
+
+    if stage_model_call_counts:
+        t.append("\n\nStage model usage:\n", style=th.COLOR_TITLE)
+        for stage_name, model_counts in stage_model_call_counts.items():
+            pairs = ", ".join(f"{model_name} ({count})" for model_name, count in model_counts.items())
+            t.append(f"  {stage_name}: {pairs}\n", style=th.COLOR_FOOTER)
+
+    if model_call_counts:
+        t.append("\n\nLLM calls:\n", style=th.COLOR_TITLE)
+        for model_name, count in model_call_counts.items():
+            t.append(f"  {model_name}: {count}\n", style=th.COLOR_FOOTER)
 
     return Panel(
         RichGroup(table, t),
@@ -206,5 +290,39 @@ def render_text_response(text: str) -> Panel:
         title="[bold green]Response[/]",
         title_align="left",
         border_style="green",
+        padding=(1, 2),
+    )
+
+
+def render_model_call_summary(
+    model_call_counts: dict[str, int],
+    stage_model_call_counts: dict[str, dict[str, int]] | None = None,
+) -> Text:
+    """Render per-model and per-stage call counts for plain-text completion output."""
+    t = Text()
+    if stage_model_call_counts:
+        t.append("Stage model usage\n", style=th.COLOR_TITLE)
+        for stage_name, model_counts in stage_model_call_counts.items():
+            pairs = ", ".join(f"{model_name} ({count})" for model_name, count in model_counts.items())
+            t.append(f"{stage_name}: {pairs}\n", style=th.COLOR_FOOTER)
+        t.append("\n", style=th.COLOR_FOOTER)
+    t.append("LLM calls\n", style=th.COLOR_TITLE)
+    if not model_call_counts:
+        t.append("No model calls recorded.", style=th.COLOR_FOOTER)
+        return t
+    for index, (model_name, count) in enumerate(model_call_counts.items()):
+        t.append(f"{model_name}: {count}", style=th.COLOR_FOOTER)
+        if index != len(model_call_counts) - 1:
+            t.append("\n")
+    return t
+
+
+def render_run_summary(summary_text: str) -> Panel:
+    """Render a compact post-run summary panel."""
+    return Panel(
+        Markdown(summary_text),
+        title="[bold cyan]What Was Done[/]",
+        title_align="left",
+        border_style=th.COLOR_BORDER,
         padding=(1, 2),
     )

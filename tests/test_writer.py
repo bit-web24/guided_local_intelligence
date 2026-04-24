@@ -1,0 +1,127 @@
+"""Tests for safe output file writing."""
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+from adp.models.task import AnchorType, MicroTask, TaskPlan, TaskStatus
+from adp.writer import build_execution_log_text, build_success_artifact, write_output_files, write_output_files_via_mcp, write_success_artifact
+
+
+def test_write_output_files_writes_relative_paths_under_output_dir(tmp_path: Path):
+    output_dir = tmp_path / "out"
+
+    written = write_output_files({"lib/main.py": "print('hi')\n"}, str(output_dir))
+
+    assert written == [("lib/main.py", len("print('hi')\n".encode("utf-8")))]
+    assert (output_dir / "lib" / "main.py").read_text(encoding="utf-8") == "print('hi')\n"
+    assert not any(p.suffix == ".tmp" for p in (output_dir / "lib").iterdir())
+
+
+def test_write_output_files_rejects_absolute_paths(tmp_path: Path):
+    output_dir = tmp_path / "out"
+    absolute_file = tmp_path / "main.py"
+
+    with pytest.raises(ValueError, match="relative paths"):
+        write_output_files({str(absolute_file): "print('hi')\n"}, str(output_dir))
+
+
+def test_write_output_files_rejects_parent_directory_escape(tmp_path: Path):
+    output_dir = tmp_path / "out"
+
+    with pytest.raises(ValueError, match="relative paths"):
+        write_output_files({"../main.py": "print('hi')\n"}, str(output_dir))
+
+
+@pytest.mark.asyncio
+async def test_write_output_files_via_mcp_calls_filesystem_tools(tmp_path: Path):
+    calls = []
+
+    class _MCP:
+        async def call_tool(self, tool_name, arguments):
+            calls.append((tool_name, arguments))
+            return "ok"
+
+    output_dir = tmp_path / "out"
+    written = await write_output_files_via_mcp(
+        {"lib/main.py": "print('hi')\n"},
+        str(output_dir),
+        _MCP(),
+    )
+
+    assert written == [("lib/main.py", len("print('hi')\n".encode("utf-8")))]
+    assert calls[0][0] == "create_directory"
+    assert calls[1][0] == "write_file"
+    assert calls[1][1]["path"].endswith("lib/main.py")
+    assert calls[1][1]["content"] == "print('hi')\n"
+
+
+def test_write_success_artifact_contains_tasks_prompts_and_generated_files(tmp_path: Path):
+    output_dir = tmp_path / "out"
+    plan = TaskPlan(
+        tasks=[
+            MicroTask(
+                id="t1",
+                description="Write hello endpoint",
+                system_prompt_template=(
+                    "You are a tiny coder.\n\nEXAMPLES:\n"
+                    "Input: hi\nCode: return 'hi'\n\n---\n"
+                    "Context: {route_contract}\nInput: {input_text}\nCode:"
+                ),
+                input_text="Write the endpoint body.",
+                output_key="hello_endpoint",
+                depends_on=[],
+                anchor=AnchorType.CODE,
+                parallel_group=0,
+                model_type="coder",
+                status=TaskStatus.DONE,
+                output="def hello():\n    return {'message': 'Hello'}",
+            )
+        ],
+        final_output_keys=["hello_endpoint"],
+        output_filenames=["app.py"],
+        write_to_file=True,
+    )
+    context = {
+        "route_contract": "GET / returns {'message': 'Hello'}",
+        "hello_endpoint": "def hello():\n    return {'message': 'Hello'}",
+    }
+    files = {"app.py": "from flask import Flask\n"}
+
+    artifact_path = write_success_artifact(
+        user_prompt="Create a tiny Flask app.",
+        plan=plan,
+        context=context,
+        files=files,
+        output_dir=str(output_dir),
+    )
+
+    artifact_file = Path(artifact_path)
+    assert artifact_file.exists()
+    assert re.fullmatch(r"adp_run_\d{8}_\d{6}_[0-9a-f]{8}\.json", artifact_file.name)
+
+    data = json.loads(artifact_file.read_text(encoding="utf-8"))
+    assert data["user_prompt"] == "Create a tiny Flask app."
+    assert data["write_to_file"] is True
+    assert data["output_filenames"] == ["app.py"]
+    assert data["generated_files"]["app.py"]["content"] == "from flask import Flask\n"
+    assert data["generated_files"]["app.py"]["bytes"] == len(
+        "from flask import Flask\n".encode("utf-8")
+    )
+    assert len(data["tasks"]) == 1
+    assert data["tasks"][0]["system_prompt_template"].endswith("Code:")
+    assert "GET / returns {'message': 'Hello'}" in data["tasks"][0]["rendered_system_prompt"]
+    assert data["tasks"][0]["output"] == "def hello():\n    return {'message': 'Hello'}"
+
+
+def test_build_helpers_return_text_without_writing(tmp_path: Path):
+    plan = TaskPlan(tasks=[], final_output_keys=[], output_filenames=[], write_to_file=False)
+    log_text = build_execution_log_text("Do the thing", plan)
+    artifact_name, artifact_text = build_success_artifact("Do the thing", plan, {}, {})
+
+    assert "# ADP Execution Log" in log_text
+    assert artifact_name.startswith("adp_run_")
+    assert '"user_prompt": "Do the thing"' in artifact_text

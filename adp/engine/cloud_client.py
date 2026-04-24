@@ -9,11 +9,13 @@ from __future__ import annotations
 import httpx
 
 from adp.config import (
-    CLOUD_MODEL,
+    get_model_config,
+    resolve_stage_model,
     CLOUD_TEMPERATURE,
     CLOUD_TIMEOUT,
     OLLAMA_BASE_URL,
 )
+from adp.engine.call_stats import record_model_call
 
 
 async def call_cloud_async(
@@ -21,6 +23,7 @@ async def call_cloud_async(
     user_message: str,
     temperature: float = CLOUD_TEMPERATURE,
     max_tokens: int = 8192,
+    stage_name: str = "cloud",
 ) -> str:
     """
     Call the large Ollama model asynchronously.
@@ -30,8 +33,10 @@ async def call_cloud_async(
 
     Returns the raw response string from the model.
     """
+    model_config = get_model_config()
+    model_name = resolve_stage_model(stage_name, model_config.cloud)
     payload = {
-        "model": CLOUD_MODEL,
+        "model": model_name,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
@@ -48,6 +53,7 @@ async def call_cloud_async(
             json=payload,
         )
         response.raise_for_status()
+        record_model_call(model_name, stage_name=stage_name)
         data = response.json()
         return data["message"]["content"]
 
@@ -56,14 +62,17 @@ async def call_cloud_with_history(
     messages: list[dict],
     temperature: float = CLOUD_TEMPERATURE,
     max_tokens: int = 8192,
+    stage_name: str = "cloud",
 ) -> str:
     """
     Call the large model with a full message history (for retry/self-correction).
 
     messages format: [{"role": "system"|"user"|"assistant", "content": "..."}]
     """
+    model_config = get_model_config()
+    model_name = resolve_stage_model(stage_name, model_config.cloud)
     payload = {
-        "model": CLOUD_MODEL,
+        "model": model_name,
         "messages": messages,
         "stream": False,
         "options": {
@@ -77,5 +86,6 @@ async def call_cloud_with_history(
             json=payload,
         )
         response.raise_for_status()
+        record_model_call(model_name, stage_name=stage_name)
         data = response.json()
         return data["message"]["content"]

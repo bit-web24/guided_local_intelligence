@@ -7,3 +7,6 @@ __pycache__/
 *.pyc
 adp_output/
 .adp_cache/
+output/
+tool_calls.log
+.gli_runs/

@@ -8,7 +8,16 @@ from prompt_toolkit.styles import Style
 from adp.config import HISTORY_FILE
 
 
-def get_user_prompt(output_dir_hint: str = "") -> str | None:
+_PROMPT_STYLE = Style.from_dict({
+    "prompt": "bold #7dd3fc",
+    "prompt.label": "bold #22d3ee",
+    "": "white",
+    "bottom-toolbar": "italic #7dd3fc",
+    "bottom-toolbar.key": "bold #22d3ee",
+})
+
+
+def get_user_input(prompt_label: str = "❯", output_dir_hint: str = "") -> str | None:
     """
     Display styled interactive input prompt.
 
@@ -21,16 +30,32 @@ def get_user_prompt(output_dir_hint: str = "") -> str | None:
     """
     session: PromptSession = PromptSession(
         history=FileHistory(HISTORY_FILE),
-        style=Style.from_dict({
-            "prompt": "bold cyan",
-            "":       "white",
-        }),
+        style=_PROMPT_STYLE,
         wrap_lines=True,
         multiline=False,
     )
 
-    hint = f"  output → {output_dir_hint}\n" if output_dir_hint else ""
     try:
-        return session.prompt(f"{hint}  ❯ ")
+        return session.prompt(
+            [
+                ("class:prompt", "  "),
+                ("class:prompt.label", prompt_label),
+                ("class:prompt", " "),
+            ],
+            bottom_toolbar=[
+                ("class:bottom-toolbar", "  "),
+                ("class:bottom-toolbar.key", "Enter"),
+                ("class:bottom-toolbar", " submit   "),
+                ("class:bottom-toolbar.key", "Ctrl+C"),
+                ("class:bottom-toolbar", " cancel   "),
+                ("class:bottom-toolbar.key", "↑↓"),
+                ("class:bottom-toolbar", " history  "),
+            ],
+        )
     except (KeyboardInterrupt, EOFError):
         return None
+
+
+def get_user_prompt(output_dir_hint: str = "") -> str | None:
+    """Backwards-compatible wrapper for the main prompt entry."""
+    return get_user_input(output_dir_hint=output_dir_hint)

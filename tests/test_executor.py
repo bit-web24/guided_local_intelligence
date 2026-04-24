@@ -1,4 +1,4 @@
-"""Tests for adp/stages/executor.py — context injection and parallel execution."""
+"""Tests for adp/stages/executor.py — context injection and sequential execution."""
 import asyncio
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
@@ -75,7 +75,7 @@ class TestExecutePlan:
 
         call_order = []
 
-        async def mock_local(system_prompt, input_text, anchor_str, model_name=None):
+        async def mock_local(system_prompt, input_text, anchor_str, model_name=None, **kwargs):
             # Capture which task's context was injected
             if "t1_result" in system_prompt:
                 call_order.append("t2_saw_t1")
@@ -119,8 +119,8 @@ class TestExecutePlan:
         assert "t2" in failed_tasks
 
     @pytest.mark.asyncio
-    async def test_parallel_group_runs_concurrently(self):
-        """Tasks in the same group should all start before any finishes."""
+    async def test_group_runs_sequentially(self):
+        """Tasks in the same group should execute one-by-one in order."""
         started = []
         finished = []
 
@@ -128,7 +128,7 @@ class TestExecutePlan:
         t2 = _make_task("t2", [], 0)
         plan = TaskPlan(tasks=[t1, t2], final_output_keys=[], output_filenames=[])
 
-        async def mock_local(system_prompt, input_text, anchor_str, model_name=None):
+        async def mock_local(system_prompt, input_text, anchor_str, model_name=None, **kwargs):
             started.append(input_text)
             await asyncio.sleep(0.05)
             finished.append(input_text)
@@ -137,9 +137,10 @@ class TestExecutePlan:
         with patch("adp.stages.executor.call_local_async", side_effect=mock_local):
             await execute_plan(plan, _noop, _noop, _noop)
 
-        # Both should have started before either finished (concurrent execution)
+        # Sequential orchestration: each task starts and finishes before the next.
         assert len(started) == 2
         assert len(finished) == 2
+        assert started == finished
         assert t1.status == TaskStatus.DONE
         assert t2.status == TaskStatus.DONE
 
@@ -162,3 +163,156 @@ class TestExecutePlan:
 
         assert t1.status == TaskStatus.FAILED
         assert call_count == MAX_RETRIES
+
+    @pytest.mark.asyncio
+    async def test_resume_skips_done_tasks_and_uses_initial_context(self):
+        """Completed tasks should not rerun when resuming a partially finished plan."""
+        t1 = _make_task("t1", [], 0, output_key="schema")
+        t1.status = TaskStatus.DONE
+        t1.output = "ready"
+        t2 = MicroTask(
+            id="t2",
+            description="Task t2",
+            system_prompt_template=(
+                "EXAMPLES:\nInput: x\nOutput: y\n---\n"
+                "Schema: {schema}\nInput: {input_text}\nOutput:"
+            ),
+            input_text="use schema",
+            output_key="answer",
+            depends_on=["t1"],
+            anchor=AnchorType.OUTPUT,
+            parallel_group=1,
+        )
+        plan = TaskPlan(tasks=[t1, t2], final_output_keys=["answer"], output_filenames=[])
+
+        prompts = []
+
+        async def mock_local(system_prompt, input_text, anchor_str, model_name=None, **kwargs):
+            prompts.append(system_prompt)
+            return "Output: resumed"
+
+        with patch("adp.stages.executor.call_local_async", side_effect=mock_local):
+            ctx = await execute_plan(
+                plan,
+                _noop,
+                _noop,
+                _noop,
+                initial_context={"schema": "ready"},
+            )
+
+        assert len(prompts) == 1
+        assert "Schema: ready" in prompts[0]
+        assert ctx["schema"] == "ready"
+        assert ctx["answer"] == "resumed"
+
+    @pytest.mark.asyncio
+    async def test_retry_with_temperature_escalation(self):
+        """Retry attempts should use increasing temperature override."""
+        t1 = _make_task("t1", [], 0)
+        plan = TaskPlan(tasks=[t1], final_output_keys=[], output_filenames=[])
+
+        temps_used = []
+
+        async def mock_local(*args, temperature_override=None, **kwargs):
+            temps_used.append(temperature_override)
+            return ""  # always invalid → forces retries
+
+        with patch("adp.stages.executor.call_local_async", side_effect=mock_local):
+            await execute_plan(plan, _noop, _noop, _noop)
+
+        # Attempt 0: None (uses default 0.0), Attempt 1: 0.1, Attempt 2: 0.2
+        assert temps_used[0] is None
+        assert temps_used[1] == pytest.approx(0.1)
+        assert temps_used[2] == pytest.approx(0.2)
+
+    @pytest.mark.asyncio
+    async def test_retry_with_error_injection(self):
+        """On retry, failed validation reason should be injected into input text."""
+        t1 = _make_task("t1", [], 0)
+        plan = TaskPlan(tasks=[t1], final_output_keys=[], output_filenames=[])
+
+        inputs_received = []
+
+        async def mock_local(system_prompt, input_text, anchor_str, **kwargs):
+            inputs_received.append(input_text)
+            return ""  # always invalid
+
+        with patch("adp.stages.executor.call_local_async", side_effect=mock_local):
+            with patch("adp.stages.executor.RETRY_INJECT_ERROR", True):
+                await execute_plan(plan, _noop, _noop, _noop)
+
+        # First attempt: no retry annotation
+        assert "[RETRY" not in inputs_received[0]
+        # Second attempt: should contain the retry hint
+        assert "[RETRY" in inputs_received[1]
+        assert "rejected" in inputs_received[1]
+
+    @pytest.mark.asyncio
+    async def test_done_task_with_empty_output_is_rerun(self):
+        t1 = _make_task("t1", [], 0, output_key="answer")
+        t1.status = TaskStatus.DONE
+        t1.output = ""
+        plan = TaskPlan(tasks=[t1], final_output_keys=["answer"], output_filenames=[])
+
+        call_count = 0
+
+        async def mock_local(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return "Output: repaired"
+
+        with patch("adp.stages.executor.call_local_async", side_effect=mock_local):
+            ctx = await execute_plan(plan, _noop, _noop, _noop)
+
+        assert call_count == 1
+        assert t1.status == TaskStatus.DONE
+        assert t1.output == "repaired"
+        assert ctx["answer"] == "repaired"
+
+    @pytest.mark.asyncio
+    async def test_recovers_date_output_from_tool_result_after_retries(self):
+        t1 = MicroTask(
+            id="t1",
+            description="Extract date in YYYY-MM-DD format from search result",
+            system_prompt_template=(
+                "EXAMPLES:\n"
+                "Input: x\n"
+                "JSON: {\"date\": \"2026-01-01\"}\n"
+                "---\n"
+                "Search: {t1_search_result}\n"
+                "Input: {input_text}\n"
+                "JSON:"
+            ),
+            input_text="extract date",
+            output_key="final_date",
+            depends_on=[],
+            anchor=AnchorType.JSON,
+            parallel_group=0,
+            mcp_tools=["search"],
+        )
+        plan = TaskPlan(tasks=[t1], final_output_keys=["final_date"], output_filenames=[])
+
+        async def mock_local(*args, **kwargs):
+            return ""  # force retries to fail validation
+
+        class _MCP:
+            async def call_tool(self, tool_name, args):
+                assert tool_name == "search"
+                return "Result snippet with date 2026-04-08 included."
+
+        with patch("adp.stages.executor.call_local_async", side_effect=mock_local):
+            ctx = await execute_plan(
+                plan,
+                _noop,
+                _noop,
+                _noop,
+                mcp_manager=_MCP(),
+                tool_registry={"search": MagicMock(
+                    name="search",
+                    input_schema={"type": "object", "properties": {}, "required": []},
+                    description="search",
+                )},
+            )
+
+        assert t1.status == TaskStatus.DONE
+        assert ctx["final_date"] == '{"date": "2026-04-08"}'
