@@ -195,3 +195,37 @@ def test_make_transport_supports_streamable_http():
             {"Authorization": "Bearer test-key"},
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_call_tool_does_not_trim_output_by_default(monkeypatch):
+    manager = _manager_for_tool("read_file")
+    manager._make_transport = lambda *args, **kwargs: _DummyTransport()  # type: ignore[assignment]
+    long_output = "x" * 25000
+    _DummySession.response = SimpleNamespace(
+        content=[SimpleNamespace(text=long_output)],
+        isError=False,
+    )
+    monkeypatch.setattr("mcp.ClientSession", _DummySession)
+    monkeypatch.setattr("adp.mcp.client.MCP_MAX_TOOL_RESULT_CHARS", 0)
+
+    result = await manager.call_tool("read_file", {"path": "/tmp/a.py"})
+
+    assert result == long_output
+    assert "truncated" not in result
+
+
+@pytest.mark.asyncio
+async def test_call_tool_trims_only_when_positive_limit_configured(monkeypatch):
+    manager = _manager_for_tool("read_file")
+    manager._make_transport = lambda *args, **kwargs: _DummyTransport()  # type: ignore[assignment]
+    _DummySession.response = SimpleNamespace(
+        content=[SimpleNamespace(text="x" * 20)],
+        isError=False,
+    )
+    monkeypatch.setattr("mcp.ClientSession", _DummySession)
+    monkeypatch.setattr("adp.mcp.client.MCP_MAX_TOOL_RESULT_CHARS", 5)
+
+    result = await manager.call_tool("read_file", {"path": "/tmp/a.py"})
+
+    assert result == "xxxxx\n... [truncated at 5 chars]"

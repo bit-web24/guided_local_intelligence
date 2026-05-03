@@ -56,17 +56,15 @@ def resolve_tool_args(
     if explicit_overrides:
         args.update(explicit_overrides)
 
-    # Step 3: Resolve {placeholder} patterns in all string values
-    for key, value in args.items():
-        if isinstance(value, str):
-            resolved = _fill_placeholders(value, context)
-            normalized = _normalize_string_arg(resolved, key=key)
-            args[key] = _repair_unresolved_string_arg(
-                value=normalized,
-                key=key,
-                task=task,
-                context=context,
-            )
+    # Step 3: Resolve {placeholder} patterns in all string values, including
+    # nested provider-specific payloads such as SerpAPI's {"params": {"q": ...}}.
+    for key, value in list(args.items()):
+        args[key] = _resolve_placeholders_in_value(
+            value,
+            key_path=(str(key),),
+            task=task,
+            context=context,
+        )
 
     # Step 4: Ensure all required args are present (raise early if missing)
     missing = [r for r in required if r not in args]
@@ -78,6 +76,50 @@ def resolve_tool_args(
         )
 
     return args
+
+
+def _resolve_placeholders_in_value(
+    value,
+    *,
+    key_path: tuple[str, ...],
+    task: MicroTask,
+    context: ContextDict,
+):
+    """Resolve placeholders recursively while preserving the original shape."""
+    if isinstance(value, str):
+        key = key_path[-1] if key_path else ""
+        resolved = _fill_placeholders(value, context)
+        normalized = _normalize_string_arg(resolved, key=key)
+        return _repair_unresolved_string_arg(
+            value=normalized,
+            key=key,
+            task=task,
+            context=context,
+        )
+
+    if isinstance(value, dict):
+        return {
+            k: _resolve_placeholders_in_value(
+                v,
+                key_path=(*key_path, str(k)),
+                task=task,
+                context=context,
+            )
+            for k, v in value.items()
+        }
+
+    if isinstance(value, list):
+        return [
+            _resolve_placeholders_in_value(
+                item,
+                key_path=key_path,
+                task=task,
+                context=context,
+            )
+            for item in value
+        ]
+
+    return value
 
 
 def _fill_placeholders(template: str, context: ContextDict) -> str:

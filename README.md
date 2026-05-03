@@ -221,7 +221,7 @@ Write → Files on disk
 - `REFLECT_ENABLED` - Enable reflection stage (default: true)
 - `REFLECT_USE_CLOUD` - Use cloud model for reflection (default: true)
 - `CLARIFICATION_MAX_ROUNDS` - Max clarification questions (default: 3)
-- `MCP_MAX_TOOL_RESULT_CHARS` - Max tool result chars to inject (default: 3000)
+- `MCP_MAX_TOOL_RESULT_CHARS` - Max tool result chars to inject (`0` = no trimming, default: 0)
 
 ## Output
 
@@ -260,7 +260,7 @@ uv run adp --no-tui "Generate a docker-compose.yml for a web app with nginx, pos
 
 1. **Models not found**: Ensure all required models are pulled with `ollama pull`
 2. **Connection refused**: Check that Ollama is running on the configured port
-3. **Context window exceeded**: Reduce task size or increase `MCP_MAX_TOOL_RESULT_CHARS`
+3. **Context window exceeded**: Reduce task size or lower `MCP_MAX_TOOL_RESULT_CHARS`
 4. **Parallel execution issues**: Use `EXECUTION_MODE=sequential` for better reliability
 
 ### Debug Mode

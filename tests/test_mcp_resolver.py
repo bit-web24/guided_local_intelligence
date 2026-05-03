@@ -153,3 +153,47 @@ def test_repairs_unresolved_query_placeholder_from_user_prompt_context():
 
     args = resolve_tool_args(tool, task, context)
     assert args["query"] == "latest layoffs news today"
+
+
+def test_resolves_nested_serpapi_query_placeholder():
+    tool = _make_tool("search", required=["params"], optional=["mode"])
+    task = _make_task(
+        mcp_tools=["search"],
+        mcp_tool_args={
+            "search": {
+                "params": {
+                    "q": "{search_query}",
+                    "engine": "google_light",
+                },
+                "mode": "complete",
+            }
+        },
+    )
+    context = {"search_query": "skill.md Claude skills how it works"}
+
+    args = resolve_tool_args(tool, task, context)
+
+    assert args["params"]["q"] == "skill.md Claude skills how it works"
+    assert args["params"]["engine"] == "google_light"
+    assert args["mode"] == "complete"
+
+
+def test_repairs_nested_serpapi_query_placeholder_from_user_prompt_context():
+    tool = _make_tool("search", required=["params"], optional=["mode"])
+    task = _make_task(
+        mcp_tools=["search"],
+        mcp_tool_args={
+            "search": {
+                "params": {
+                    "q": "{search_args.query}",
+                    "engine": "google_light",
+                }
+            }
+        },
+    )
+    context = {"__user_prompt__": "search the web about skill.md and explain it"}
+
+    args = resolve_tool_args(tool, task, context)
+
+    assert args["params"]["q"] == "search the web about skill.md and explain it"
+    assert args["params"]["engine"] == "google_light"

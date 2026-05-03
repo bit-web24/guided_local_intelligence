@@ -112,8 +112,9 @@ RETRY_INJECT_ERROR = os.getenv("RETRY_INJECT_ERROR", "true").lower() in ("true",
 # MCP (Model Context Protocol)
 # ---------------------------------------------------------------------------
 # Maximum characters of a tool result injected into a local model's context.
-# Prevents context window overflow for tools like read_file on large files.
-MCP_MAX_TOOL_RESULT_CHARS = int(os.getenv("MCP_MAX_TOOL_RESULT_CHARS", "3000"))
+# 0 means no trimming. This preserves full search/tool output by default; set a
+# positive value only when you deliberately want to cap very large tool results.
+MCP_MAX_TOOL_RESULT_CHARS = int(os.getenv("MCP_MAX_TOOL_RESULT_CHARS", "0"))
 
 # Path to the MCP server configuration TOML file.
 # Falls back to ~/.config/adp/mcp_servers.toml if project-local file not found.

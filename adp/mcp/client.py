@@ -216,7 +216,7 @@ class MCPClientManager:
                 )
                 raise RuntimeError(search_error)
 
-        if len(raw) > MCP_MAX_TOOL_RESULT_CHARS:
+        if MCP_MAX_TOOL_RESULT_CHARS > 0 and len(raw) > MCP_MAX_TOOL_RESULT_CHARS:
             raw = (
                 raw[:MCP_MAX_TOOL_RESULT_CHARS]
                 + f"\n... [truncated at {MCP_MAX_TOOL_RESULT_CHARS} chars]"
