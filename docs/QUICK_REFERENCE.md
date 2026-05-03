@@ -105,7 +105,7 @@ uv run adp "Your prompt here"
 ```bash
 # Ensure mcp_servers.toml is configured with:
 # - filesystem server for file access
-# - web search for research tasks
+# - SerpAPI web search for research tasks
 
 # Research and generate
 uv run adp "Research latest trends in AI and write a summary report"

@@ -101,7 +101,7 @@ async def test_call_tool_raises_on_semantic_search_failure(monkeypatch):
             SimpleNamespace(
                 text=(
                     '{"query":"q","totalResults":0,"results":[],'
-                    '"partialFailures":[{"message":"Startpage returned a verification page"}]}'
+                    '"partialFailures":[{"message":"Search provider returned a verification page"}]}'
                 )
             )
         ],
@@ -164,3 +164,34 @@ def test_prepare_filesystem_server_roots_creates_missing_directories(tmp_path):
     assert not root_path.exists()
     _prepare_filesystem_server_roots(cfg)
     assert root_path.exists()
+
+
+def test_make_transport_supports_streamable_http():
+    manager = MCPClientManager()
+    cfg = MCPServerConfig(
+        name="serpapi",
+        transport="streamable_http",
+        url="https://mcp.serpapi.com/test-key/mcp",
+        headers={"Authorization": "Bearer test-key"},
+    )
+    calls = []
+
+    def fake_streamablehttp_client(url, headers=None):
+        calls.append((url, headers))
+        return object()
+
+    transport = manager._make_transport(
+        cfg,
+        StdioServerParameters=None,
+        stdio_client=None,
+        sse_client=None,
+        streamablehttp_client=fake_streamablehttp_client,
+    )
+
+    assert transport is not None
+    assert calls == [
+        (
+            "https://mcp.serpapi.com/test-key/mcp",
+            {"Authorization": "Bearer test-key"},
+        )
+    ]

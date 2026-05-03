@@ -10,3 +10,4 @@ adp_output/
 output/
 tool_calls.log
 .gli_runs/
+.env

@@ -26,6 +26,7 @@ from adp.engine.final_verifier import (
 )
 from adp.engine.run_store import generate_run_id, load_run_state, save_run_state
 from adp.models.task import AnchorType, ContextDict, MicroTask, PipelineResult, StageList, TaskPlan
+from adp.skills.loader import Skill, default_skill_roots, load_skills_from_roots, select_relevant_skills
 from adp.stages.assembler import assemble
 from adp.stages.decomposer import decompose
 from adp.stages.executor import execute_plan
@@ -53,6 +54,7 @@ class AgentState(TypedDict, total=False):
     debug: bool
     mcp_manager: Any
     tool_registry: Any
+    selected_skills: list[Skill]
     project_dir: str
     plan: TaskPlan | None
     context: ContextDict
@@ -80,6 +82,12 @@ def _system_tool_task(task_id: str, description: str) -> MicroTask:
         parallel_group=0,
         model_type="general",
     )
+
+
+def _select_skills_for_prompt(user_prompt: str, project_dir: str) -> list[Skill]:
+    """Load Claude-style skills and select a small relevant set for planning."""
+    skills = load_skills_from_roots(default_skill_roots(project_dir))
+    return select_relevant_skills(user_prompt, skills, max_skills=2)
 
 
 def _persist(state: AgentState, **overrides: Any) -> None:
@@ -386,15 +394,21 @@ async def _initialize_node(
 async def _plan_node(state: AgentState) -> AgentState:
     callbacks = state["callbacks"]
     callbacks.on_stage("DECOMPOSING")
+    selected_skills = _select_skills_for_prompt(
+        state["user_prompt"],
+        state["project_dir"],
+    )
     plan = await decompose(
         state["user_prompt"],
         tool_registry=state["tool_registry"],
         project_dir=state["project_dir"],
         on_retry=callbacks.on_decomposition_retry,
+        selected_skills=selected_skills,
     )
     callbacks.on_plan_ready(plan)
     updates: AgentState = {
         "plan": plan,
+        "selected_skills": selected_skills,
         "context": {},
         "files": {},
         "status": "planned",
@@ -467,6 +481,7 @@ async def _replan_node(state: AgentState) -> AgentState:
         tool_registry=state["tool_registry"],
         project_dir=state["project_dir"],
         on_retry=callbacks.on_decomposition_retry,
+        selected_skills=state.get("selected_skills", []),
     )
     callbacks.on_plan_ready(plan)
     updates: AgentState = {

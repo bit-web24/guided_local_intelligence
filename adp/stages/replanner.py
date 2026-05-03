@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from adp.models.task import ContextDict, MicroTask, TaskPlan, TaskStatus
+from adp.skills.loader import Skill
 from adp.stages.decomposer import decompose
 
 
@@ -57,6 +58,7 @@ async def replan(
     tool_registry=None,
     project_dir: str = "",
     on_retry=None,
+    selected_skills: list[Skill] | None = None,
 ) -> TaskPlan:
     """
     Request a fresh plan using the prior execution results and failure causes.
@@ -81,6 +83,7 @@ async def replan(
             tool_registry=tool_registry,
             project_dir=project_dir,
             on_retry=on_retry,
+            selected_skills=selected_skills,
         )
 
     remaining_final_keys = _remaining_final_output_keys(previous_plan)
@@ -106,6 +109,7 @@ async def replan(
         tool_registry=tool_registry,
         project_dir=project_dir,
         on_retry=on_retry,
+        selected_skills=selected_skills,
         existing_tasks=completed_tasks,
         final_output_keys_override=previous_plan.final_output_keys,
         output_filenames_override=previous_plan.output_filenames,

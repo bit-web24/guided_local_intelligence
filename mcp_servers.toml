@@ -27,16 +27,11 @@ args    = ["-y", "@modelcontextprotocol/server-filesystem", "/home/bittu/Desktop
 # command = "uvx"
 # args    = ["mcp-server-git", "--repository", "."]
 
-# --- Free web search server (no API key) ---
+# --- SerpAPI web search server ---
 [[servers]]
 name      = "web_search"
-transport = "stdio"
-command   = "npx"
-args      = ["-y", "open-websearch@latest"]
-[servers.env]
-MODE = "stdio"
-DEFAULT_SEARCH_ENGINE = "duckduckgo"
-ALLOWED_SEARCH_ENGINES = "duckduckgo,startpage"
+transport = "streamable_http"
+url       = "https://mcp.serpapi.com/${SERPAPI_API_KEY}/mcp"
 
 # --- GitHub server (repos, PRs, issues) ---
 # [[servers]]

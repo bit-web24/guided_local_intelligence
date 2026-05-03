@@ -83,6 +83,7 @@ class MCPClientManager:
             from mcp import ClientSession
             from mcp.client.stdio import StdioServerParameters, stdio_client
             from mcp.client.sse import sse_client
+            from mcp.client.streamable_http import streamablehttp_client
         except ImportError as e:
             logger.warning(f"mcp package not installed — MCP disabled. ({e})")
             return ToolRegistry()
@@ -94,7 +95,12 @@ class MCPClientManager:
             try:
                 _prepare_filesystem_server_roots(cfg)
                 tools = await self._discover_tools(
-                    cfg, StdioServerParameters, stdio_client, sse_client, ClientSession
+                    cfg,
+                    StdioServerParameters,
+                    stdio_client,
+                    sse_client,
+                    streamablehttp_client,
+                    ClientSession,
                 )
                 for tool in tools:
                     all_tools[tool.name] = tool
@@ -115,13 +121,15 @@ class MCPClientManager:
         StdioServerParameters,
         stdio_client,
         sse_client,
+        streamablehttp_client,
         ClientSession,
     ) -> list[MCPTool]:
         """Open a fresh session, list tools, close. Returns list[MCPTool]."""
         transport_cm = self._make_transport(
-            cfg, StdioServerParameters, stdio_client, sse_client
+            cfg, StdioServerParameters, stdio_client, sse_client, streamablehttp_client
         )
-        async with transport_cm as (read, write):
+        async with transport_cm as transport:
+            read, write = transport[0], transport[1]
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 tools_response = await session.list_tools()
@@ -157,6 +165,7 @@ class MCPClientManager:
             from mcp import ClientSession
             from mcp.client.stdio import StdioServerParameters, stdio_client
             from mcp.client.sse import sse_client
+            from mcp.client.streamable_http import streamablehttp_client
         except ImportError as e:
             raise RuntimeError(f"mcp package not available: {e}") from e
 
@@ -168,9 +177,10 @@ class MCPClientManager:
                         f"Search failed: unresolved query placeholder '{query_value}'."
                     )
             transport_cm = self._make_transport(
-                cfg, StdioServerParameters, stdio_client, sse_client
+                cfg, StdioServerParameters, stdio_client, sse_client, streamablehttp_client
             )
-            async with transport_cm as (read, write):
+            async with transport_cm as transport:
+                read, write = transport[0], transport[1]
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     response = await session.call_tool(tool_name, arguments=arguments)
@@ -228,6 +238,7 @@ class MCPClientManager:
         StdioServerParameters,
         stdio_client,
         sse_client,
+        streamablehttp_client,
     ):
         """Return the appropriate transport context manager for a server config."""
         if cfg.transport == "stdio":
@@ -237,13 +248,14 @@ class MCPClientManager:
                 env=cfg.env if cfg.env else None,
             )
             return stdio_client(params)
-        elif cfg.transport == "sse":
+        if cfg.transport == "sse":
             return sse_client(cfg.url)
-        else:
-            raise ValueError(
-                f"Unknown transport '{cfg.transport}' for server '{cfg.name}'. "
-                "Use 'stdio' or 'sse'."
-            )
+        if cfg.transport in {"streamable_http", "http"}:
+            return streamablehttp_client(cfg.url, headers=cfg.headers or None)
+        raise ValueError(
+            f"Unknown transport '{cfg.transport}' for server '{cfg.name}'. "
+            "Use 'stdio', 'sse', or 'streamable_http'."
+        )
 
 
 def _extract_search_failure(raw: str) -> str | None:

@@ -152,9 +152,8 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "./output"]
 # Web search (pre-configured)
 [[servers]]
 name = "web_search"
-transport = "stdio"
-command = "npx"
-args = ["-y", "open-websearch@latest"]
+transport = "streamable_http"
+url = "https://mcp.serpapi.com/${SERPAPI_API_KEY}/mcp"
 ```
 
 ### 2. Run Resumption

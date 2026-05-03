@@ -13,6 +13,7 @@ from adp.stages.decomposer import (
 )
 from adp.config import DECOMPOSITION_MAX_RETRIES
 from adp.models.task import AnchorType, MicroTask, TaskStatus
+from adp.skills.loader import Skill
 
 
 VALID_PLAN_DATA = {
@@ -453,6 +454,33 @@ class TestParseTaskPlan:
 
         assert plan.tasks[1].output_key == "endpoint_code_2"
         assert plan.final_output_keys == ["endpoint_code_2"]
+
+
+@pytest.mark.asyncio
+async def test_decompose_injects_selected_skill_guidance(tmp_path):
+    captured_messages = []
+    selected_skill = Skill(
+        name="testing-code",
+        description="Plan robust tests. Use when writing pytest tests.",
+        body="# Testing Code\n\n## Instructions\nPrefer fixtures and behavior assertions.",
+        path=tmp_path / "testing-code" / "SKILL.md",
+    )
+
+    async def mock_cloud(messages, **kwargs):
+        captured_messages.extend(messages)
+        return json.dumps({**VALID_PLAN_DATA, "write_to_file": True})
+
+    with patch("adp.stages.decomposer.call_cloud_with_history", side_effect=mock_cloud):
+        await decompose(
+            "Write pytest tests for the calculator module.",
+            selected_skills=[selected_skill],
+        )
+
+    system_prompt = captured_messages[0]["content"]
+    assert "SELECTED SKILLS:" in system_prompt
+    assert "### Skill: testing-code" in system_prompt
+    assert "Prefer fixtures and behavior assertions." in system_prompt
+    assert "do not override the core ADP schema" in system_prompt
 
 
 class TestDecomposerPrompt:

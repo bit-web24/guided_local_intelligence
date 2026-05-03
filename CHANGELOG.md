@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP (Model Context Protocol) integration for external tool support
 - Reflection stage for semantic validation between execution and assembly
 - Resumption capability for failed or interrupted runs
-- Web search MCP server with no API key required
+- SerpAPI web search MCP server support
 - Comprehensive verification layers throughout the pipeline
 - TUI progress indicators and live updates
 - Clarification dialogue for ambiguous prompts

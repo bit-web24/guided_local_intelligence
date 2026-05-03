@@ -18,6 +18,7 @@ from adp.engine.cloud_client import call_cloud_with_history
 from adp.engine.plan_validator import PlanValidationError, validate_task_plan
 from adp.models.task import AnchorType, MicroTask, TaskPlan
 from adp.config import CLOUD_TEMPERATURE, DECOMPOSITION_MAX_RETRIES
+from adp.skills.loader import Skill, format_skills_for_decomposer
 
 # Avoid a hard dependency on the mcp sub-package at import time
 try:
@@ -318,6 +319,7 @@ async def decompose(
     tool_registry=None,
     project_dir: str = "",
     on_retry: Callable[[int, str], None] | None = None,
+    selected_skills: list[Skill] | None = None,
     existing_tasks: list[MicroTask] | None = None,
     final_output_keys_override: list[str] | None = None,
     output_filenames_override: list[str] | None = None,
@@ -337,8 +339,10 @@ async def decompose(
     Retries up to DECOMPOSITION_MAX_RETRIES times using self-correction
     messages if JSON parse or plan validation fails.
     """
-    # Build the effective system prompt (base + optional MCP tool block)
+    # Build the effective system prompt (base + optional skill and MCP blocks)
     system_prompt = DECOMPOSER_SYSTEM_PROMPT
+    if selected_skills:
+        system_prompt += format_skills_for_decomposer(selected_skills)
     if tool_registry is not None and not tool_registry.is_empty():
         tool_summary = tool_registry.tool_summary_for_decomposer()
         system_prompt += _MCP_TOOL_BLOCK_TEMPLATE.format(

@@ -283,6 +283,7 @@ async def test_graph_reports_internal_filesystem_writes_as_tools(tmp_path):
     with patch("adp.agent_graph.decompose", AsyncMock(return_value=plan)), \
          patch("adp.agent_graph.execute_plan", AsyncMock(return_value={"markdown_content": plan.tasks[0].output})), \
          patch("adp.agent_graph.reflect_plan", AsyncMock(return_value=[])), \
+         patch("adp.agent_graph.assemble", AsyncMock(return_value={"books_api/README.md": plan.tasks[0].output})), \
          patch("adp.agent_graph.verify_files_match_user_prompt", AsyncMock(return_value=None)), \
          patch("adp.agent_graph.write_text_file_via_mcp", AsyncMock(return_value="ok")):
         await run_agent_graph(

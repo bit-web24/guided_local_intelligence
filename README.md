@@ -118,30 +118,55 @@ uv run pytest --cov=adp --cov-report=html
 ## MCP Servers
 
 GLI can expose external tools to the decomposer and executor through `mcp_servers.toml`.
-This repo includes a free web-search MCP server configuration that does not require an API key:
+This repo includes a SerpAPI web-search MCP server configuration:
 
 ```toml
 [[servers]]
 name      = "web_search"
-transport = "stdio"
-command   = "npx"
-args      = ["-y", "open-websearch@latest"]
-[servers.env]
-MODE = "stdio"
-DEFAULT_SEARCH_ENGINE = "duckduckgo"
-ALLOWED_SEARCH_ENGINES = "duckduckgo,startpage"
+transport = "streamable_http"
+url       = "https://mcp.serpapi.com/${SERPAPI_API_KEY}/mcp"
 ```
 
-This uses `open-websearch`, which supports no-key web search and content retrieval over MCP.
-It requires `node`/`npm` with `npx` available on the machine.
+Set `SERPAPI_API_KEY` in your environment before running GLI. Do not commit
+real API keys to `.env` or source control.
 
 ### Available MCP Servers
 
 - **Filesystem** - Read/write local files (pre-configured to output directory)
 - **Git** - Git operations (log, diff, show)
-- **Web Search** - Free web search via DuckDuckGo/Startpage
+- **Web Search** - SerpAPI search via MCP
 - **GitHub** - GitHub repositories, PRs, issues (requires token)
 - **Custom SSE** - Connect to HTTP SSE servers
+
+## Skills
+
+GLI supports Claude-style planning Skills. A Skill is a directory containing
+`SKILL.md` with YAML frontmatter:
+
+```markdown
+---
+name: testing-code
+description: Plan robust code testing workflows. Use when writing tests or fixing pytest failures.
+---
+
+# Testing Code
+
+## Instructions
+
+Skill instructions go here.
+```
+
+Project Skills live under `.claude/skills/<skill-name>/SKILL.md`. GLI loads
+project Skills first, then `~/.claude/skills`, selects up to two relevant Skills
+for the user prompt, and injects them into the decomposer as planning guidance.
+Skills do not execute code and cannot override ADP's schema, dependency,
+placeholder, anchor, MCP, or final-output validation rules.
+
+This repo includes two sample Skills:
+
+- `testing-code` for pytest and automated testing workflows.
+- `writing-documentation` for READMEs, API docs, setup guides, and architecture notes.
+- `websearch-to-file` for source-backed web research saved into a requested file.
 
 ## Architecture
 
